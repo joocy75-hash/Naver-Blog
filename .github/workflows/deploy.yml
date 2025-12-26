@@ -175,11 +175,11 @@ jobs:
 
             # 기존 컨테이너 중지 및 제거
             echo '🛑 Stopping existing container...'
-            docker-compose down --remove-orphans || true
+            docker compose down --remove-orphans 2>/dev/null || docker-compose down --remove-orphans 2>/dev/null || true
 
             # 새 컨테이너 시작
             echo '🚀 Starting new container...'
-            docker-compose up -d
+            docker compose up -d 2>/dev/null || docker-compose up -d
 
             # 정리
             echo '🧹 Cleaning up...'
