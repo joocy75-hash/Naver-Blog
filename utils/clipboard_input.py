@@ -18,13 +18,25 @@ except ImportError:
     logger.error("pyperclip이 설치되지 않았습니다: pip install pyperclip")
     raise
 
+import os
+
+# 헤드리스 서버 환경에서는 pyautogui를 사용하지 않음
+_headless_mode = os.environ.get('HEADLESS', 'False').lower() == 'true' or 'DISPLAY' not in os.environ
+
 try:
-    import pyautogui
-    # macOS에서 더 안정적인 pyautogui 사용
-    pyautogui.PAUSE = 0.05  # 명령 간 기본 딜레이
-    pyautogui.FAILSAFE = True  # 마우스를 모서리로 이동하면 중단
+    if _headless_mode:
+        logger.info("헤드리스 모드: pyautogui 비활성화 (Playwright 내장 메서드 사용)")
+        pyautogui = None
+    else:
+        import pyautogui
+        # macOS에서 더 안정적인 pyautogui 사용
+        pyautogui.PAUSE = 0.05  # 명령 간 기본 딜레이
+        pyautogui.FAILSAFE = True  # 마우스를 모서리로 이동하면 중단
 except ImportError:
     logger.warning("pyautogui가 설치되지 않았습니다: pip install pyautogui")
+    pyautogui = None
+except Exception as e:
+    logger.warning(f"pyautogui 초기화 실패 (헤드리스 환경일 수 있음): {e}")
     pyautogui = None
 
 
