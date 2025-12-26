@@ -1,0 +1,48 @@
+# systemd 서비스 파일
+# 설치 위치: /etc/systemd/system/naver-blog-bot.service
+#
+# 사용법:
+#   sudo cp deploy/naver-blog-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable naver-blog-bot
+#   sudo systemctl start naver-blog-bot
+
+[Unit]
+Description=Naver Blog Auto Posting Bot
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+
+# 작업 디렉토리
+WorkingDirectory=/home/ubuntu/naver-blog-bot
+
+# 가상환경 활성화 및 실행
+ExecStart=/home/ubuntu/naver-blog-bot/venv/bin/python -m scheduler.auto_scheduler
+
+# 환경 변수
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Seoul
+EnvironmentFile=/home/ubuntu/naver-blog-bot/.env
+
+# 재시작 정책
+Restart=always
+RestartSec=30
+
+# 로그
+StandardOutput=append:/var/log/naver-blog-bot/stdout.log
+StandardError=append:/var/log/naver-blog-bot/stderr.log
+
+# 보안 설정
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/ubuntu/naver-blog-bot/logs
+ReadWritePaths=/home/ubuntu/naver-blog-bot/generated_images
+ReadWritePaths=/home/ubuntu/naver-blog-bot/data
+ReadWritePaths=/var/log/naver-blog-bot
+
+[Install]
+WantedBy=multi-user.target

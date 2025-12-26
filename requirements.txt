@@ -1,0 +1,75 @@
+# ============================================
+# 네이버 블로그 자동화 시스템 - 의존성 패키지
+# Updated: 2025-12-22
+# ============================================
+
+# 브라우저 자동화
+playwright==1.49.1
+playwright-stealth==1.0.6
+pyautogui==0.9.54              # 고급 마우스/키보드 제어
+pyperclip==1.9.0               # 클립보드 제어 (fill() 대안)
+
+# AI API
+anthropic==0.42.0              # Claude Haiku 4.5 / Sonnet
+google-generativeai==0.8.3     # Gemini Pro
+google-cloud-aiplatform==1.74.0  # Vertex AI Imagen 3
+openai==1.58.1                 # Perplexity (OpenAI 호환)
+
+# 보안 및 암호화
+keyring==24.3.0                # 시스템 키체인 통합
+cryptography==42.0.0           # AES-256 암호화
+python-dotenv==1.0.1           # 환경 변수 관리
+
+# 데이터베이스
+SQLAlchemy==2.0.36             # ORM
+psycopg2-binary==2.9.9         # PostgreSQL 드라이버
+alembic==1.13.1                # DB 마이그레이션
+
+# 데이터 수집 및 파싱
+feedparser==6.0.11             # RSS 피드 파서
+beautifulsoup4==4.12.3         # HTML 파싱
+lxml==5.1.0                    # XML 파서 (빠른 속도)
+requests==2.32.3               # HTTP 클라이언트
+aiohttp==3.9.1                 # 비동기 HTTP
+
+# 이미지 처리
+Pillow==11.0.0                 # 이미지 합성 및 편집
+opencv-python==4.9.0.80        # 고급 이미지 처리
+numpy==1.26.3                  # 수치 연산
+
+# 스케줄링 및 작업 관리
+apscheduler==3.10.4            # 작업 스케줄러
+celery==5.3.4                  # 분산 작업 큐 (선택)
+redis==5.0.1                   # Celery 백엔드
+
+# 텍스트 처리 및 분석
+textstat==0.7.3                # 가독성 분석 (Flesch-Kincaid)
+nltk==3.8.1                    # 자연어 처리
+transformers==4.36.2           # 감성 분석 모델 (선택)
+
+# 수학 및 통계
+scipy==1.11.4                  # 베지어 곡선 계산
+pandas==2.1.4                  # 데이터 분석
+
+# 모니터링 및 로깅
+python-telegram-bot==20.7      # 텔레그램 알림
+loguru==0.7.2                  # 고급 로깅
+sentry-sdk==1.39.1             # 에러 추적 (선택)
+
+# 유틸리티
+pyyaml==6.0.1                  # YAML 설정 파일
+pydantic==2.5.3                # 데이터 검증
+tenacity==8.2.3                # 재시도 로직
+python-dateutil==2.8.2         # 날짜/시간 유틸리티
+
+# 개발 도구 (선택)
+pytest==7.4.3                  # 테스트 프레임워크
+pytest-asyncio==0.21.1         # 비동기 테스트
+black==23.12.1                 # 코드 포매터
+flake8==6.1.0                  # 린터
+mypy==1.7.1                    # 타입 체커
+
+# MCP 통합 (Node.js 필요)
+# npm install -g @modelcontextprotocol/server-sequential-thinking
+# npm install -g @modelcontextprotocol/server-brave-search
+# npm install -g @modelcontextprotocol/server-memory

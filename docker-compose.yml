@@ -1,0 +1,92 @@
+# ============================================
+# 네이버 블로그 자동화 시스템 - Docker Compose
+# Group B: Personal Automation Services
+# Server: Hetzner CPX31 (4 vCPU / 8 GB RAM)
+# ============================================
+version: '3.8'
+
+services:
+  # ============================================
+  # 메인 블로그 자동화 서비스
+  # ============================================
+  naver-blog-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: naver-blog-bot:latest
+    container_name: naver-blog-bot
+    restart: always
+
+    # 환경 변수 파일
+    env_file:
+      - .env
+
+    # 환경 변수 오버라이드
+    environment:
+      - TZ=Asia/Seoul
+      - PYTHONUNBUFFERED=1
+      - HEADLESS=True
+      - LOG_LEVEL=INFO
+
+    # 볼륨 마운트
+    volumes:
+      - ./logs:/app/logs
+      - ./generated_images:/app/generated_images
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+
+    # 리소스 제한 (Group B 할당: 2GB)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+
+    # 로깅 설정
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+
+    # 헬스체크
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # 네트워크
+    networks:
+      - group-b-network
+
+# ============================================
+# 네트워크 설정
+# ============================================
+networks:
+  group-b-network:
+    name: group-b-personal-automation
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+# ============================================
+# 볼륨 설정 (영구 데이터)
+# ============================================
+volumes:
+  blog-data:
+    name: naver-blog-data
+  blog-logs:
+    name: naver-blog-logs

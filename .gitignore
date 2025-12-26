@@ -1,0 +1,106 @@
+# ============================================
+# 네이버 블로그 자동화 - Git Ignore
+# ============================================
+
+# 환경 변수 및 보안
+.env
+.env.*
+!.env.example
+*.local
+storage_state.json
+*.encrypted
+auth/
+secrets/
+*.key
+*.pem
+
+# 데이터베이스
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+migrations/versions/
+
+# 세션 및 쿠키
+sessions/
+cookies/
+*.session
+
+# 로그
+logs/
+*.log
+*.log.*
+
+# 이미지 캐시
+data/images/
+data/temp/
+*.jpg
+*.png
+*.webp
+!docs/*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Playwright
+playwright/.local-browsers/
+test-results/
+playwright-report/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# MCP
+node_modules/
+package-lock.json
+
+# Backup
+*.bak
+*.backup
+*.old
+
+# Docker
+docker-image.tar.gz
+
+# Generated images (배포 시 제외)
+generated_images/
+
+# Data cache
+data/cache/
+data/sessions/
+data/logs/
