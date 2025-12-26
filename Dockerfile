@@ -48,7 +48,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libcairo2 \
     fonts-nanum \
-    fonts-nanum-coding \
     dumb-init \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
