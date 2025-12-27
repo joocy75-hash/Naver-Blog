@@ -1,16 +1,20 @@
 """
-헬스체크 시스템
+헬스체크 시스템 (강화 버전)
 - 시스템 구성요소 상태 모니터링
-- API 연결 상태 확인
-- 디스크/메모리 사용량 체크
+- API 연결 상태 및 응답시간 확인
+- 디스크/메모리/CPU 사용량 체크
+- 실시간 알림 연동
+- 상세 진단 정보 제공
 """
 
 import os
 import asyncio
 import aiohttp
-from datetime import datetime
-from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
+import psutil
+import time
+from datetime import datetime, timedelta
+from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from loguru import logger
@@ -43,7 +47,7 @@ class HealthCheckResult:
 
 
 class HealthChecker:
-    """시스템 헬스체크 클래스"""
+    """시스템 헬스체크 클래스 (강화 버전)"""
 
     # 체크 항목
     COMPONENTS = [
@@ -52,6 +56,8 @@ class HealthChecker:
         "gemini_api",
         "naver_session",
         "disk_space",
+        "memory",
+        "cpu",
         "database"
     ]
 
@@ -59,12 +65,27 @@ class HealthChecker:
     DISK_WARNING_GB = 5
     DISK_CRITICAL_GB = 1
 
+    # 메모리 임계값 (%)
+    MEMORY_WARNING_PERCENT = 80
+    MEMORY_CRITICAL_PERCENT = 90
+
+    # CPU 임계값 (%)
+    CPU_WARNING_PERCENT = 70
+    CPU_CRITICAL_PERCENT = 90
+
+    # API 응답시간 임계값 (ms)
+    API_RESPONSE_WARNING_MS = 3000
+    API_RESPONSE_CRITICAL_MS = 10000
+
     def __init__(self):
         """초기화"""
         self.results: Dict[str, HealthCheckResult] = {}
         self.last_full_check: Optional[datetime] = None
+        self.check_history: List[Dict[str, Any]] = []  # 히스토리 추적
+        self.api_response_times: Dict[str, List[float]] = {}  # API 응답시간 추적
+        self.alert_sent: Dict[str, datetime] = {}  # 알림 발송 기록
 
-        logger.info("HealthChecker 초기화")
+        logger.info("HealthChecker 초기화 (강화 버전)")
 
     async def run_all_checks(self) -> Dict[str, HealthCheckResult]:
         """
@@ -82,6 +103,8 @@ class HealthChecker:
             self._check_gemini_api(),
             self._check_naver_session(),
             self._check_disk_space(),
+            self._check_memory(),
+            self._check_cpu(),
             self._check_database()
         ]
 
@@ -95,13 +118,54 @@ class HealthChecker:
                 logger.error(f"헬스체크 중 예외: {result}")
 
         self.last_full_check = datetime.now()
+
+        # 히스토리에 추가
+        self._save_to_history()
+
         logger.info("전체 헬스체크 완료")
+
+        # 자동으로 알림 전송
+        await self.send_alert_if_needed()
 
         return self.results
 
+    def _save_to_history(self):
+        """체크 결과를 히스토리에 저장"""
+        history_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "overall_status": self._get_overall_status().value,
+            "components": {
+                name: {
+                    "status": result.status.value,
+                    "message": result.message
+                }
+                for name, result in self.results.items()
+            }
+        }
+        self.check_history.append(history_entry)
+
+        # 최근 100개만 유지
+        if len(self.check_history) > 100:
+            self.check_history = self.check_history[-100:]
+
+    def _get_overall_status(self) -> HealthStatus:
+        """전체 상태 계산"""
+        if not self.results:
+            return HealthStatus.UNKNOWN
+
+        statuses = [r.status for r in self.results.values()]
+
+        if HealthStatus.CRITICAL in statuses:
+            return HealthStatus.CRITICAL
+        elif HealthStatus.WARNING in statuses:
+            return HealthStatus.WARNING
+        else:
+            return HealthStatus.HEALTHY
+
     async def _check_claude_api(self) -> HealthCheckResult:
-        """Claude API 연결 체크"""
+        """Claude API 연결 체크 (응답시간 포함)"""
         component = "claude_api"
+        start_time = time.time()
 
         try:
             api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -123,26 +187,54 @@ class HealthChecker:
                     },
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as response:
+                    response_time_ms = (time.time() - start_time) * 1000
+                    self._record_response_time(component, response_time_ms)
+
                     # 401/403은 인증 확인됨 (메시지 없이 호출했으므로 400 예상)
                     if response.status in [400, 401, 403, 200]:
+                        # 응답시간 체크
+                        if response_time_ms > self.API_RESPONSE_CRITICAL_MS:
+                            return HealthCheckResult(
+                                component=component,
+                                status=HealthStatus.WARNING,
+                                message=f"API 응답 느림: {response_time_ms:.0f}ms",
+                                details={
+                                    "status_code": response.status,
+                                    "response_time_ms": round(response_time_ms, 1)
+                                }
+                            )
+                        elif response_time_ms > self.API_RESPONSE_WARNING_MS:
+                            return HealthCheckResult(
+                                component=component,
+                                status=HealthStatus.HEALTHY,
+                                message=f"Claude API 정상 (응답: {response_time_ms:.0f}ms)",
+                                details={
+                                    "status_code": response.status,
+                                    "response_time_ms": round(response_time_ms, 1)
+                                }
+                            )
                         return HealthCheckResult(
                             component=component,
                             status=HealthStatus.HEALTHY,
-                            message="Claude API 연결 정상",
-                            details={"status_code": response.status}
+                            message=f"Claude API 연결 정상 ({response_time_ms:.0f}ms)",
+                            details={
+                                "status_code": response.status,
+                                "response_time_ms": round(response_time_ms, 1)
+                            }
                         )
                     else:
                         return HealthCheckResult(
                             component=component,
                             status=HealthStatus.WARNING,
-                            message=f"예상치 못한 응답: {response.status}"
+                            message=f"예상치 못한 응답: {response.status}",
+                            details={"response_time_ms": round(response_time_ms, 1)}
                         )
 
         except asyncio.TimeoutError:
             return HealthCheckResult(
                 component=component,
-                status=HealthStatus.WARNING,
-                message="API 응답 타임아웃"
+                status=HealthStatus.CRITICAL,
+                message="API 응답 타임아웃 (10초 초과)"
             )
         except Exception as e:
             return HealthCheckResult(
@@ -150,6 +242,24 @@ class HealthChecker:
                 status=HealthStatus.CRITICAL,
                 message=f"API 체크 실패: {str(e)}"
             )
+
+    def _record_response_time(self, component: str, response_time_ms: float):
+        """API 응답시간 기록"""
+        if component not in self.api_response_times:
+            self.api_response_times[component] = []
+
+        self.api_response_times[component].append(response_time_ms)
+
+        # 최근 50개만 유지
+        if len(self.api_response_times[component]) > 50:
+            self.api_response_times[component] = self.api_response_times[component][-50:]
+
+    def get_average_response_time(self, component: str) -> Optional[float]:
+        """평균 응답시간 반환"""
+        times = self.api_response_times.get(component, [])
+        if not times:
+            return None
+        return sum(times) / len(times)
 
     async def _check_perplexity_api(self) -> HealthCheckResult:
         """Perplexity API 연결 체크"""
@@ -329,6 +439,7 @@ class HealthChecker:
     async def _check_database(self) -> HealthCheckResult:
         """데이터베이스 연결 체크"""
         component = "database"
+        start_time = time.time()
 
         try:
             from models.database import DatabaseManager
@@ -342,10 +453,13 @@ class HealthChecker:
             session.execute(text("SELECT 1"))
             session.close()
 
+            query_time_ms = (time.time() - start_time) * 1000
+
             return HealthCheckResult(
                 component=component,
                 status=HealthStatus.HEALTHY,
-                message="데이터베이스 연결 정상"
+                message=f"데이터베이스 연결 정상 ({query_time_ms:.0f}ms)",
+                details={"query_time_ms": round(query_time_ms, 1)}
             )
 
         except Exception as e:
@@ -353,6 +467,103 @@ class HealthChecker:
                 component=component,
                 status=HealthStatus.CRITICAL,
                 message=f"데이터베이스 연결 실패: {str(e)}"
+            )
+
+    async def _check_memory(self) -> HealthCheckResult:
+        """메모리 사용량 체크"""
+        component = "memory"
+
+        try:
+            memory = psutil.virtual_memory()
+            used_percent = memory.percent
+            available_gb = memory.available / (1024 ** 3)
+            total_gb = memory.total / (1024 ** 3)
+
+            details = {
+                "used_percent": round(used_percent, 1),
+                "available_gb": round(available_gb, 2),
+                "total_gb": round(total_gb, 2)
+            }
+
+            if used_percent >= self.MEMORY_CRITICAL_PERCENT:
+                return HealthCheckResult(
+                    component=component,
+                    status=HealthStatus.CRITICAL,
+                    message=f"메모리 부족! {used_percent:.1f}% 사용 중 ({available_gb:.1f}GB 남음)",
+                    details=details
+                )
+            elif used_percent >= self.MEMORY_WARNING_PERCENT:
+                return HealthCheckResult(
+                    component=component,
+                    status=HealthStatus.WARNING,
+                    message=f"메모리 높음: {used_percent:.1f}% 사용 중",
+                    details=details
+                )
+            else:
+                return HealthCheckResult(
+                    component=component,
+                    status=HealthStatus.HEALTHY,
+                    message=f"메모리 정상: {used_percent:.1f}% 사용 ({available_gb:.1f}GB 사용 가능)",
+                    details=details
+                )
+
+        except Exception as e:
+            return HealthCheckResult(
+                component=component,
+                status=HealthStatus.UNKNOWN,
+                message=f"메모리 체크 실패: {str(e)}"
+            )
+
+    async def _check_cpu(self) -> HealthCheckResult:
+        """CPU 사용량 체크"""
+        component = "cpu"
+
+        try:
+            # CPU 사용량 (1초간 측정)
+            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_count = psutil.cpu_count()
+
+            # 로드 평균 (Unix 계열만)
+            try:
+                load_avg = os.getloadavg()
+                load_1min = load_avg[0]
+            except (OSError, AttributeError):
+                load_1min = None
+
+            details = {
+                "cpu_percent": round(cpu_percent, 1),
+                "cpu_count": cpu_count
+            }
+            if load_1min is not None:
+                details["load_1min"] = round(load_1min, 2)
+
+            if cpu_percent >= self.CPU_CRITICAL_PERCENT:
+                return HealthCheckResult(
+                    component=component,
+                    status=HealthStatus.CRITICAL,
+                    message=f"CPU 과부하! {cpu_percent:.1f}% 사용 중",
+                    details=details
+                )
+            elif cpu_percent >= self.CPU_WARNING_PERCENT:
+                return HealthCheckResult(
+                    component=component,
+                    status=HealthStatus.WARNING,
+                    message=f"CPU 높음: {cpu_percent:.1f}% 사용 중",
+                    details=details
+                )
+            else:
+                return HealthCheckResult(
+                    component=component,
+                    status=HealthStatus.HEALTHY,
+                    message=f"CPU 정상: {cpu_percent:.1f}% 사용 중",
+                    details=details
+                )
+
+        except Exception as e:
+            return HealthCheckResult(
+                component=component,
+                status=HealthStatus.UNKNOWN,
+                message=f"CPU 체크 실패: {str(e)}"
             )
 
     def get_status_report(self) -> Dict[str, Any]:
@@ -391,28 +602,138 @@ class HealthChecker:
         ]
 
     async def send_alert_if_needed(self) -> None:
-        """필요시 알림 전송"""
+        """필요시 알림 전송 (WARNING 및 CRITICAL 모두)"""
         failed = self.get_failed_checks()
 
         if not failed:
             return
 
-        # Critical 항목이 있으면 알림
-        critical = [r for r in failed if r.status == HealthStatus.CRITICAL]
+        try:
+            from utils.telegram_notifier import get_notifier, AlertLevel
 
-        if critical:
-            try:
-                from utils.telegram_notifier import send_notification
+            notifier = get_notifier()
 
-                message = "🔴 시스템 헬스체크 경고\n\n"
-                for result in critical:
-                    message += f"❌ {result.component}: {result.message}\n"
+            # Critical 항목
+            critical = [r for r in failed if r.status == HealthStatus.CRITICAL]
+            # Warning 항목
+            warnings = [r for r in failed if r.status == HealthStatus.WARNING]
 
-                await send_notification(message)
-                logger.warning("헬스체크 경고 알림 전송됨")
+            # CRITICAL 알림
+            if critical:
+                overall_status = "critical"
+                components = {r.component: {"status": r.status.value, "message": r.message} for r in self.results.values()}
+                failed_names = [r.component for r in critical]
 
-            except Exception as e:
-                logger.error(f"알림 전송 실패: {e}")
+                await notifier.send_health_check_result(
+                    overall_status=overall_status,
+                    components=components,
+                    failed_components=failed_names
+                )
+                logger.warning(f"헬스체크 CRITICAL 알림 전송: {failed_names}")
+
+            # WARNING 알림 (CRITICAL이 없을 때만)
+            elif warnings:
+                overall_status = "warning"
+                components = {r.component: {"status": r.status.value, "message": r.message} for r in self.results.values()}
+                failed_names = [r.component for r in warnings]
+
+                await notifier.send_health_check_result(
+                    overall_status=overall_status,
+                    components=components,
+                    failed_components=failed_names
+                )
+                logger.warning(f"헬스체크 WARNING 알림 전송: {failed_names}")
+
+            # 시스템 리소스 알림 (CPU, 메모리, 디스크)
+            await self._send_resource_alerts(notifier)
+
+        except Exception as e:
+            logger.error(f"알림 전송 실패: {e}")
+
+    async def _send_resource_alerts(self, notifier) -> None:
+        """시스템 리소스 관련 상세 알림"""
+        try:
+            # CPU/메모리/디스크 상태 추출
+            cpu_result = self.results.get("cpu")
+            memory_result = self.results.get("memory")
+            disk_result = self.results.get("disk_space")
+
+            cpu_percent = 0
+            memory_percent = 0
+            disk_percent = 0
+
+            if cpu_result and cpu_result.details:
+                cpu_percent = cpu_result.details.get("cpu_percent", 0)
+            if memory_result and memory_result.details:
+                memory_percent = memory_result.details.get("used_percent", 0)
+            if disk_result and disk_result.details:
+                disk_percent = disk_result.details.get("used_percent", 0)
+
+            # 리소스 상태 알림
+            await notifier.send_system_status(
+                cpu_percent=cpu_percent,
+                memory_percent=memory_percent,
+                disk_percent=disk_percent,
+                active_tasks=0,
+                queue_size=0
+            )
+
+        except Exception as e:
+            logger.error(f"리소스 알림 전송 실패: {e}")
+
+    async def run_quick_check(self) -> Dict[str, HealthCheckResult]:
+        """빠른 헬스체크 (시스템 리소스만)"""
+        logger.info("빠른 헬스체크 시작 (리소스만)")
+
+        tasks = [
+            self._check_memory(),
+            self._check_cpu(),
+            self._check_disk_space()
+        ]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        quick_results = {}
+        for result in results:
+            if isinstance(result, HealthCheckResult):
+                quick_results[result.component] = result
+                self.results[result.component] = result
+
+        # 알림 필요 여부 체크
+        failed = [r for r in quick_results.values()
+                  if r.status in [HealthStatus.CRITICAL, HealthStatus.WARNING]]
+        if failed:
+            await self.send_alert_if_needed()
+
+        return quick_results
+
+    def get_system_metrics(self) -> Dict[str, Any]:
+        """현재 시스템 메트릭 반환"""
+        try:
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "cpu": {
+                    "percent": cpu_percent,
+                    "count": psutil.cpu_count()
+                },
+                "memory": {
+                    "percent": memory.percent,
+                    "available_gb": round(memory.available / (1024**3), 2),
+                    "total_gb": round(memory.total / (1024**3), 2)
+                },
+                "disk": {
+                    "percent": disk.percent,
+                    "free_gb": round(disk.free / (1024**3), 2),
+                    "total_gb": round(disk.total / (1024**3), 2)
+                }
+            }
+        except Exception as e:
+            logger.error(f"시스템 메트릭 수집 실패: {e}")
+            return {"error": str(e)}
 
 
 # ============================================

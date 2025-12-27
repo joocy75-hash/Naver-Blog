@@ -376,14 +376,112 @@ df -h
 free -h
 ```
 
-### 7.4 텔레그램 알림 형식
+### 7.4 텔레그램 알림 시스템 (강화 버전)
 
+#### 7.4.1 알림 레벨
+
+| 레벨 | 이모지 | 설명 | 쿨다운 |
+|------|--------|------|--------|
+| INFO | ℹ️ | 정보성 알림 | 30분 |
+| SUCCESS | ✅ | 성공 알림 | 즉시 |
+| WARNING | ⚠️ | 경고 알림 | 10분 |
+| ERROR | ❌ | 오류 알림 | 5분 |
+| CRITICAL | 🚨 | 심각한 오류 | 즉시 |
+
+#### 7.4.2 알림 종류
+
+| 상황 | 알림 메서드 | 트리거 |
+|------|------------|--------|
+| 포스팅 성공/실패 | `send_post_success/failure()` | 포스팅 완료 시 |
+| 시스템 리소스 | `send_system_status()` | CPU/메모리/디스크 경고 시 |
+| API 상태 | `send_api_status()` | 응답 느림 또는 오류 시 |
+| 세션 만료 | `send_session_warning()` | 세션 만료 1~3일 전 |
+| 에러 분석 | `send_error_analysis()` | 에러 발생 시 (권장 조치 포함) |
+| 헬스체크 | `send_health_check_result()` | WARNING/CRITICAL 감지 시 |
+| Rate Limit | `send_rate_limit_warning()` | 사용량 80%/95% 도달 시 |
+| 일시정지 | `send_alert()` | 연속 3회 에러 시 |
+| 복구 성공 | `send_recovery_notification()` | 자동 복구 완료 시 |
+| 시작/종료 | `send_startup/shutdown_alert()` | 봇 시작/종료 시 |
+
+#### 7.4.3 모니터링 주기
+
+| 주기 | 작업 | 알림 조건 |
+|------|------|----------|
+| 15분 | 빠른 리소스 체크 | CPU 70%↑, 메모리 80%↑, 디스크 85%↑ |
+| 1시간 | 전체 헬스체크 | API/DB/세션 문제 감지 시 |
+| 3시간 | 세션 상태 체크 | 만료 3일 전부터 경고 |
+| 매일 21:00 | 일간 리포트 | 항상 (통계) |
+| 매주 일요일 20:00 | 주간 리포트 | 항상 (통계) |
+
+#### 7.4.4 알림 예시
+
+**시작 알림:**
 ```
-✅ 블로그 포스팅 성공!
-📝 제목: [제목...]
-🔗 URL: https://blog.naver.com/...
-📊 오늘 3/12개
-⏱ 총 15개 발행
+🚀 블로그 봇 시작
+
+👤 계정: wncksdid0750
+⏰ 포스팅 간격: 1-2시간
+📊 일일 제한: 12개
+🤖 모델: haiku
+
+📊 시스템 상태:
+  • CPU: 15.2%
+  • 메모리: 45.3%
+  • 디스크: 32.1%
+
+✅ 헬스체크: HEALTHY
+```
+
+**에러 분석 알림:**
+```
+⚠️ 에러 발생
+
+에러 유형: session_expired
+내용: 네이버 로그인 세션이 만료되었습니다
+발생 횟수: 2회
+최초 발생: 14:23:45
+
+💡 권장 조치:
+세션 재로그인
+네이버 세션이 만료되었습니다. 수동으로 재로그인이 필요합니다.
+⚠️ 수동 조치가 필요합니다.
+```
+
+**일시정지 알림:**
+```
+🚨 자동 포스팅 일시정지
+
+연속 에러 3회 발생으로 일시정지됩니다.
+
+⏱ 쿨다운: 30분
+🕐 재개 예정: 15:30:00
+
+📊 에러 유형별 통계:
+  • session_expired: 2회
+  • network_error: 1회
+
+📋 최근 에러:
+1. [session_expired] 세션 만료...
+2. [network_error] 연결 실패...
+3. [session_expired] 로그인 필요...
+
+💡 권장 조치:
+세션 재로그인
+네이버 세션이 만료되었습니다. 수동으로 재로그인이 필요합니다.
+```
+
+**헬스체크 경고:**
+```
+🟡 시스템 헬스체크 경고
+
+컴포넌트 상태:
+  ✅ claude_api: Claude API 연결 정상 (245ms)
+  ✅ perplexity_api: Perplexity API 키 설정됨
+  ⚠️ memory: 메모리 높음: 82.5% 사용 중
+  ✅ disk_space: 디스크 공간 정상 (45.2GB 남음)
+  ✅ database: 데이터베이스 연결 정상 (12ms)
+
+❌ 문제 컴포넌트: memory
 ```
 
 ---
@@ -448,7 +546,35 @@ docker compose restart
 
 ## 9. 알려진 이슈 및 해결책
 
-### 9.1 취소선 버그 (해결됨)
+### 9.1 AsyncIOScheduler 비동기 실행 문제 (해결됨 - 2025-12-27)
+
+**증상**: 스케줄러가 24시간 가동되었으나 포스팅 0개, 텔레그램 알림 0개
+
+- 로그에 `RuntimeWarning: coroutine was never awaited` 경고 다수 발생
+- `_post_job`, `_run_health_check` 등 async 함수가 실행되지 않음
+
+**원인**: `BackgroundScheduler`(동기식)로 `async def` 함수를 직접 호출
+
+- APScheduler의 BackgroundScheduler는 동기 스케줄러
+- async 함수를 직접 등록하면 코루틴 객체만 반환되고 실제 실행이 안 됨
+
+**해결**: `AsyncIOScheduler`로 변경 (async 함수 네이티브 지원)
+```python
+# 변경 전
+from apscheduler.schedulers.background import BackgroundScheduler
+self.scheduler = BackgroundScheduler()
+
+# 변경 후
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+self.scheduler = AsyncIOScheduler()
+```
+
+**수정된 파일**:
+
+- `scheduler/auto_scheduler.py`: AsyncIOScheduler 적용, 비동기 메인 루프 구현
+- `utils/error_recovery.py`: `asyncio.create_task()` 안전 호출 처리
+
+### 9.2 취소선 버그 (해결됨)
 
 **증상**: 본문 입력 시 취소선 서식이 적용됨
 

@@ -11,7 +11,6 @@ import sys
 import asyncio
 import random
 import signal
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -24,7 +23,7 @@ load_dotenv()
 # 프로젝트 루트 추가
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
@@ -106,8 +105,8 @@ class AutoPostingScheduler:
         self.start_time: Optional[datetime] = None
         self.is_running = False
 
-        # 스케줄러
-        self.scheduler = BackgroundScheduler()
+        # 스케줄러 (AsyncIOScheduler로 변경 - async 함수 직접 지원)
+        self.scheduler = AsyncIOScheduler()
         self.pipeline: Optional[BlogPostPipeline] = None
 
         # 새로운 시스템 모듈 초기화
@@ -362,7 +361,7 @@ class AutoPostingScheduler:
         except Exception as e:
             logger.warning(f"텔레그램 알림 실패: {e}")
 
-    def _reset_daily_counter(self):
+    async def _reset_daily_counter(self):
         """자정에 일일 카운터 리셋"""
         logger.info("🔄 일일 포스팅 카운터 리셋")
         self.posts_today = 0
@@ -397,6 +396,57 @@ class AutoPostingScheduler:
         except Exception as e:
             logger.error(f"일간 리포트 전송 실패: {e}")
 
+    async def _send_weekly_report(self):
+        """주간 리포트 전송"""
+        logger.info("📈 주간 리포트 생성 및 전송")
+        try:
+            await self.reporter.send_weekly_report()
+        except Exception as e:
+            logger.error(f"주간 리포트 전송 실패: {e}")
+
+    async def _run_quick_resource_check(self):
+        """빠른 시스템 리소스 체크 (15분마다)"""
+        logger.debug("⚡ 빠른 리소스 체크 실행")
+        try:
+            await self.health_checker.run_quick_check()
+        except Exception as e:
+            logger.error(f"빠른 리소스 체크 실패: {e}")
+
+    async def _check_session_status(self):
+        """세션 상태 체크 및 만료 경고"""
+        logger.info("🔐 세션 상태 체크")
+        try:
+            from security.session_manager import SecureSessionManager
+            from utils.telegram_notifier import get_notifier
+
+            session_manager = SecureSessionManager()
+            sessions = session_manager.list_sessions()
+            notifier = get_notifier()
+
+            for session_name in sessions:
+                # 세션 유효성 확인
+                if not session_manager.is_session_valid(session_name, max_age_days=7):
+                    # 만료됨
+                    await notifier.send_session_warning(
+                        account_id=session_name,
+                        days_until_expiry=0
+                    )
+                elif not session_manager.is_session_valid(session_name, max_age_days=5):
+                    # 2일 이내 만료
+                    await notifier.send_session_warning(
+                        account_id=session_name,
+                        days_until_expiry=2
+                    )
+                elif not session_manager.is_session_valid(session_name, max_age_days=4):
+                    # 3일 이내 만료
+                    await notifier.send_session_warning(
+                        account_id=session_name,
+                        days_until_expiry=3
+                    )
+
+        except Exception as e:
+            logger.error(f"세션 상태 체크 실패: {e}")
+
     def _on_job_executed(self, event):
         """작업 완료 이벤트 핸들러"""
         logger.debug(f"Job executed: {event.job_id}")
@@ -413,6 +463,7 @@ class AutoPostingScheduler:
             blocking: True면 블로킹 모드 (서버용), False면 논블로킹
         """
         self.start_time = datetime.now()
+        self.is_running = True
 
         logger.info("=" * 60)
         logger.info("🚀 24시간 자동 포스팅 스케줄러 시작")
@@ -424,6 +475,17 @@ class AutoPostingScheduler:
         logger.info(f"   텔레그램 알림: {'ON' if self.telegram_enabled else 'OFF'}")
         logger.info("=" * 60)
 
+        # asyncio 이벤트 루프에서 실행
+        if blocking:
+            asyncio.run(self._async_main())
+        else:
+            # 논블로킹 모드 - 백그라운드 스레드에서 실행
+            import threading
+            thread = threading.Thread(target=lambda: asyncio.run(self._async_main()), daemon=True)
+            thread.start()
+
+    async def _async_main(self):
+        """비동기 메인 루프"""
         # 이벤트 리스너 등록
         self.scheduler.add_listener(self._on_job_executed, EVENT_JOB_EXECUTED)
         self.scheduler.add_listener(self._on_job_error, EVENT_JOB_ERROR)
@@ -435,11 +497,25 @@ class AutoPostingScheduler:
             id="daily_reset"
         )
 
-        # 정기 헬스체크 (6시간마다)
+        # 정기 헬스체크 (1시간마다)
         self.scheduler.add_job(
             self._run_health_check,
-            trigger=IntervalTrigger(hours=6),
+            trigger=IntervalTrigger(hours=1),
             id="health_check"
+        )
+
+        # 빠른 리소스 체크 (15분마다 - CPU, 메모리, 디스크만)
+        self.scheduler.add_job(
+            self._run_quick_resource_check,
+            trigger=IntervalTrigger(minutes=15),
+            id="quick_resource_check"
+        )
+
+        # 세션 상태 체크 (3시간마다)
+        self.scheduler.add_job(
+            self._check_session_status,
+            trigger=IntervalTrigger(hours=3),
+            id="session_check"
         )
 
         # 일간 리포트 (매일 저녁 9시)
@@ -449,51 +525,142 @@ class AutoPostingScheduler:
             id="daily_report"
         )
 
+        # 주간 리포트 (매주 일요일 저녁 8시)
+        self.scheduler.add_job(
+            self._send_weekly_report,
+            trigger=CronTrigger(day_of_week='sun', hour=20, minute=0),
+            id="weekly_report"
+        )
+
         # 첫 포스팅 즉시 스케줄
         self._schedule_next_post()
 
         # 스케줄러 시작
         self.scheduler.start()
+        logger.info("AsyncIOScheduler 시작됨")
 
-        # 시작 시 헬스체크 실행 (동기적으로)
+        # 시작 시 헬스체크 및 시작 알림 전송
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._run_health_check())
+            await self._run_health_check()
+            await self._send_startup_alert()
         except Exception as e:
-            logger.warning(f"초기 헬스체크 실패: {e}")
+            logger.warning(f"초기 헬스체크/시작 알림 실패: {e}")
 
-        if blocking:
-            # 시그널 핸들러 등록
-            signal.signal(signal.SIGINT, self._signal_handler)
-            signal.signal(signal.SIGTERM, self._signal_handler)
+        # 시그널 핸들러 등록
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self._async_shutdown(s)))
 
-            try:
-                # APScheduler는 자체 스레드에서 실행되므로 메인 스레드 대기
-                while True:
-                    time.sleep(1)
-            except (KeyboardInterrupt, SystemExit):
-                self.stop()
+        # 무한 대기 (스케줄러가 백그라운드에서 실행됨)
+        try:
+            while self.is_running:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.info("메인 루프 취소됨")
+        finally:
+            await self._async_cleanup()
 
-    def _signal_handler(self, signum, frame):
-        """시그널 핸들러"""
-        logger.info(f"시그널 수신: {signum}")
-        self.stop()
+    async def _async_shutdown(self, sig):
+        """비동기 종료 처리"""
+        logger.info(f"시그널 수신: {sig}")
+        self.is_running = False
 
-    def stop(self):
-        """스케줄러 중지"""
+    async def _async_cleanup(self):
+        """비동기 정리 작업"""
         logger.info("=" * 60)
         logger.info("⏹ 스케줄러 종료 중...")
 
+        uptime_str = "알 수 없음"
         if self.start_time:
             uptime = datetime.now() - self.start_time
-            logger.info(f"   가동 시간: {uptime}")
+            uptime_str = str(uptime).split('.')[0]
+            logger.info(f"   가동 시간: {uptime_str}")
             logger.info(f"   총 포스팅: {self.total_posts}개")
             logger.info(f"   오류 횟수: {self.errors_count}")
+
+        # 종료 알림 전송
+        try:
+            await self._send_shutdown_alert(uptime_str)
+        except Exception as e:
+            logger.warning(f"종료 알림 전송 실패: {e}")
 
         self.scheduler.shutdown(wait=False)
         logger.info("👋 스케줄러 종료 완료")
         logger.info("=" * 60)
+
+    async def _send_startup_alert(self):
+        """시작 알림 전송 (강화 버전)"""
+        try:
+            from utils.telegram_notifier import get_notifier, AlertLevel
+
+            notifier = get_notifier()
+
+            # 시스템 메트릭 수집
+            metrics = self.health_checker.get_system_metrics()
+
+            message = f"👤 계정: {self.naver_id}\n"
+            message += f"⏰ 포스팅 간격: {self.min_interval}-{self.max_interval}시간\n"
+            message += f"📊 일일 제한: {self.daily_limit}개\n"
+            message += f"🤖 모델: {self.model}\n"
+            message += f"📱 텔레그램 알림: {'ON' if self.telegram_enabled else 'OFF'}\n"
+            message += f"👥 다중 계정: {'ON' if self.multi_account else 'OFF'}\n\n"
+
+            message += "📊 시스템 상태:\n"
+            if "cpu" in metrics:
+                message += f"  • CPU: {metrics['cpu']['percent']}%\n"
+            if "memory" in metrics:
+                message += f"  • 메모리: {metrics['memory']['percent']}%\n"
+            if "disk" in metrics:
+                message += f"  • 디스크: {metrics['disk']['percent']}%\n"
+
+            # 헬스체크 결과 요약
+            health_report = self.health_checker.get_status_report()
+            overall = health_report.get("overall_status", "unknown")
+            status_emoji = "✅" if overall == "healthy" else "⚠️" if overall == "warning" else "❌"
+            message += f"\n{status_emoji} 헬스체크: {overall.upper()}"
+
+            await notifier.send_alert(
+                title="🚀 블로그 봇 시작",
+                message=message,
+                level=AlertLevel.SUCCESS,
+                alert_key="startup"
+            )
+
+            logger.info("시작 알림 전송 완료")
+
+        except Exception as e:
+            logger.warning(f"시작 알림 전송 실패: {e}")
+
+    def stop(self):
+        """스케줄러 중지 (동기 인터페이스)"""
+        self.is_running = False
+
+    async def _send_shutdown_alert(self, uptime_str: str):
+        """종료 알림 전송"""
+        try:
+            from utils.telegram_notifier import get_notifier, AlertLevel
+
+            notifier = get_notifier()
+
+            message = f"📈 총 포스팅: {self.total_posts}개\n"
+            message += f"✅ 오늘 포스팅: {self.posts_today}개\n"
+            message += f"❌ 총 오류: {self.errors_count}회\n"
+            message += f"⏱ 가동 시간: {uptime_str}\n"
+
+            # 에러 통계
+            if self.error_recovery.error_history:
+                error_stats = self.error_recovery._get_error_type_summary()
+                message += f"\n📊 에러 유형별:\n{error_stats}"
+
+            await notifier.send_alert(
+                title="⏹ 블로그 봇 종료",
+                message=message,
+                level=AlertLevel.INFO,
+                alert_key="shutdown"
+            )
+
+        except Exception as e:
+            logger.warning(f"종료 알림 전송 실패: {e}")
 
     def get_status(self) -> Dict[str, Any]:
         """현재 상태 반환"""
