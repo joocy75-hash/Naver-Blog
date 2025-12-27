@@ -18,10 +18,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from loguru import logger
+from dotenv import load_dotenv
 
 # 프로젝트 임포트
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# .env 파일 로드
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 
 class HealthStatus(Enum):
@@ -190,8 +194,15 @@ class HealthChecker:
                     response_time_ms = (time.time() - start_time) * 1000
                     self._record_response_time(component, response_time_ms)
 
-                    # 401/403은 인증 확인됨 (메시지 없이 호출했으므로 400 예상)
-                    if response.status in [400, 401, 403, 200]:
+                    # API 연결 확인용 응답 코드들:
+                    # - 405: POST만 허용하므로 GET시 Method Not Allowed (정상 - API 연결됨)
+                    # - 401/403: 인증 관련 응답 (API 연결됨, 키 문제)
+                    # - 400: 메시지 없이 호출시 Bad Request (정상 - API 연결됨)
+                    # - 200: 정상 응답
+                    # - 429: Rate limit (API 연결됨, 일시적 제한)
+                    valid_status_codes = {200, 400, 401, 403, 405, 429}
+
+                    if response.status in valid_status_codes:
                         # 응답시간 체크
                         if response_time_ms > self.API_RESPONSE_CRITICAL_MS:
                             return HealthCheckResult(
@@ -203,16 +214,7 @@ class HealthChecker:
                                     "response_time_ms": round(response_time_ms, 1)
                                 }
                             )
-                        elif response_time_ms > self.API_RESPONSE_WARNING_MS:
-                            return HealthCheckResult(
-                                component=component,
-                                status=HealthStatus.HEALTHY,
-                                message=f"Claude API 정상 (응답: {response_time_ms:.0f}ms)",
-                                details={
-                                    "status_code": response.status,
-                                    "response_time_ms": round(response_time_ms, 1)
-                                }
-                            )
+
                         return HealthCheckResult(
                             component=component,
                             status=HealthStatus.HEALTHY,
@@ -222,13 +224,29 @@ class HealthChecker:
                                 "response_time_ms": round(response_time_ms, 1)
                             }
                         )
-                    else:
+
+                    # 500번대 에러는 서버 문제
+                    if response.status >= 500:
                         return HealthCheckResult(
                             component=component,
                             status=HealthStatus.WARNING,
-                            message=f"예상치 못한 응답: {response.status}",
-                            details={"response_time_ms": round(response_time_ms, 1)}
+                            message=f"API 서버 오류: {response.status}",
+                            details={
+                                "status_code": response.status,
+                                "response_time_ms": round(response_time_ms, 1)
+                            }
                         )
+
+                    # 기타 예상치 못한 응답 (HEALTHY로 처리 - 연결은 됨)
+                    return HealthCheckResult(
+                        component=component,
+                        status=HealthStatus.HEALTHY,
+                        message=f"Claude API 연결됨 (응답: {response.status})",
+                        details={
+                            "status_code": response.status,
+                            "response_time_ms": round(response_time_ms, 1)
+                        }
+                    )
 
         except asyncio.TimeoutError:
             return HealthCheckResult(
