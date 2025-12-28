@@ -9,11 +9,15 @@
 """
 
 import asyncio
+import os
 import random
 from playwright.async_api import async_playwright
 from security.session_manager import SecureSessionManager
 from utils.clipboard_input import ClipboardInputHelper
 from loguru import logger
+
+# 환경 변수에서 HEADLESS 설정 읽기 (기본값: 서버에서는 True)
+HEADLESS_MODE = os.environ.get("HEADLESS", "True").lower() == "true"
 
 
 class HumanDelay:
@@ -26,41 +30,50 @@ class HumanDelay:
 
     # 설정 파일에서 로드 (없으면 기본값 사용)
     try:
-        from config.human_timing import DELAYS, TYPING, TIMEOUTS, SAFE_MODE, SAFE_MODE_MULTIPLIER
+        from config.human_timing import (
+            DELAYS,
+            TYPING,
+            TIMEOUTS,
+            SAFE_MODE,
+            SAFE_MODE_MULTIPLIER,
+        )
     except ImportError:
         # 기본 딜레이 프리셋
         DELAYS = {
-            'page_load': (1.5, 2.5),
-            'element_appear': (0.5, 1.0),
-            'before_click': (0.3, 0.7),
-            'after_click': (0.5, 1.2),
-            'before_type': (0.3, 0.6),
-            'between_fields': (0.8, 1.5),
-            'popup_react': (0.8, 1.5),
-            'popup_close': (0.3, 0.6),
-            'publish_wait': (1.0, 2.0),
-            'layer_appear': (0.8, 1.2),
-            'micro': (0.1, 0.3),
-            'short': (0.3, 0.6),
+            "page_load": (1.5, 2.5),
+            "element_appear": (0.5, 1.0),
+            "before_click": (0.3, 0.7),
+            "after_click": (0.5, 1.2),
+            "before_type": (0.3, 0.6),
+            "between_fields": (0.8, 1.5),
+            "popup_react": (0.8, 1.5),
+            "popup_close": (0.3, 0.6),
+            "publish_wait": (1.0, 2.0),
+            "layer_appear": (0.8, 1.2),
+            "micro": (0.1, 0.3),
+            "short": (0.3, 0.6),
         }
         TYPING = {
-            'title_min': 50, 'title_max': 100,
-            'content_min': 40, 'content_max': 80,
-            'line_pause_min': 0.1, 'line_pause_max': 0.25,
+            "title_min": 50,
+            "title_max": 100,
+            "content_min": 40,
+            "content_max": 80,
+            "line_pause_min": 0.1,
+            "line_pause_max": 0.25,
         }
         TIMEOUTS = {
-            'element_visible': 800,
-            'popup_visible': 800,
-            'layer_visible': 3000,
-            'button_visible': 500,
-            'quick_check': 300,
-            'normal_check': 500,
+            "element_visible": 800,
+            "popup_visible": 800,
+            "layer_visible": 3000,
+            "button_visible": 500,
+            "quick_check": 300,
+            "normal_check": 500,
         }
         SAFE_MODE = False
         SAFE_MODE_MULTIPLIER = 1.5
 
     @classmethod
-    async def wait(cls, delay_type: str = 'short', multiplier: float = 1.0):
+    async def wait(cls, delay_type: str = "short", multiplier: float = 1.0):
         """
         지정된 타입의 랜덤 딜레이 적용
 
@@ -68,7 +81,7 @@ class HumanDelay:
             delay_type: DELAYS에 정의된 딜레이 타입
             multiplier: 딜레이 배수 (1.0 = 기본)
         """
-        min_delay, max_delay = cls.DELAYS.get(delay_type, cls.DELAYS['short'])
+        min_delay, max_delay = cls.DELAYS.get(delay_type, cls.DELAYS["short"])
 
         # 안전 모드 시 딜레이 증가
         if cls.SAFE_MODE:
@@ -85,14 +98,14 @@ class HumanDelay:
         await asyncio.sleep(delay)
 
     @classmethod
-    def get_typing_delay(cls, field_type: str = 'content') -> int:
+    def get_typing_delay(cls, field_type: str = "content") -> int:
         """타이핑 딜레이 반환 (ms)"""
-        if field_type == 'title':
-            return random.randint(cls.TYPING['title_min'], cls.TYPING['title_max'])
-        return random.randint(cls.TYPING['content_min'], cls.TYPING['content_max'])
+        if field_type == "title":
+            return random.randint(cls.TYPING["title_min"], cls.TYPING["title_max"])
+        return random.randint(cls.TYPING["content_min"], cls.TYPING["content_max"])
 
     @classmethod
-    def get_timeout(cls, timeout_type: str = 'normal_check') -> int:
+    def get_timeout(cls, timeout_type: str = "normal_check") -> int:
         """타임아웃 값 반환 (ms)"""
         return cls.TIMEOUTS.get(timeout_type, 500)
 
@@ -129,24 +142,28 @@ class NaverBlogPoster:
 
         self._playwright = await async_playwright().start()
 
+        logger.info(f"Headless 모드: {HEADLESS_MODE}")
         self.browser = await self._playwright.chromium.launch(
-            headless=False,
+            headless=HEADLESS_MODE,
             args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
-                '--no-sandbox'
-            ]
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+                "--disable-setuid-sandbox",
+            ],
         )
 
         # 저장된 세션으로 컨텍스트 생성
         self.context = await self.browser.new_context(
             storage_state=storage_state,
-            viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                       'AppleWebKit/537.36 (KHTML, like Gecko) '
-                       'Chrome/120.0.0.0 Safari/537.36',
-            locale='ko-KR',
-            timezone_id='Asia/Seoul'
+            viewport={"width": 1920, "height": 1080},
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36",
+            locale="ko-KR",
+            timezone_id="Asia/Seoul",
         )
 
         # 봇 탐지 우회
@@ -187,19 +204,23 @@ class NaverBlogPoster:
                 return True
 
             # 2. 프로필 영역 확인
-            profile = await self.page.locator('.MyView, .profile_area, .gnb_my').count()
+            profile = await self.page.locator(".MyView, .profile_area, .gnb_my").count()
             if profile > 0:
                 logger.success("✅ 로그인 상태 확인됨 (프로필)")
                 return True
 
             # 3. 글쓰기 버튼 확인
-            write_btn = await self.page.locator('a[href*="postwrite"], button:has-text("글쓰기")').count()
+            write_btn = await self.page.locator(
+                'a[href*="postwrite"], button:has-text("글쓰기")'
+            ).count()
             if write_btn > 0:
                 logger.success("✅ 로그인 상태 확인됨 (글쓰기 버튼)")
                 return True
 
             # 4. 로그인 버튼이 없으면 로그인된 상태
-            login_btn = await self.page.locator('a:has-text("로그인"), button:has-text("로그인")').count()
+            login_btn = await self.page.locator(
+                'a:has-text("로그인"), button:has-text("로그인")'
+            ).count()
             if login_btn == 0:
                 logger.success("✅ 로그인 상태 확인됨 (로그인 버튼 없음)")
                 return True
@@ -215,70 +236,227 @@ class NaverBlogPoster:
         logger.info("글쓰기 페이지로 이동 중...")
 
         write_url = self.WRITE_URL_TEMPLATE.format(naver_id=self.naver_id)
-        await self.page.goto(write_url, wait_until='domcontentloaded')
-        await HumanDelay.wait('page_load')
+        await self.page.goto(write_url, wait_until="domcontentloaded")
+        await HumanDelay.wait("page_load")
 
-        # 팝업 처리
+        # 에디터 로드 대기 (팝업보다 먼저!)
+        await self._wait_for_editor()
+
+        # ★ 중요: 팝업은 에디터 로드 후에 나타남 - 여기서 처리
+        await asyncio.sleep(2)  # 팝업이 나타날 시간 확보 (증가)
         await self._handle_popups()
 
-        # 에디터 로드 대기
-        await self._wait_for_editor()
+        # ★ 추가 대기 후 한 번 더 팝업 체크 (팝업이 늦게 나타나는 경우 대비)
+        await asyncio.sleep(1)
+        await self._handle_popups()
+
+        # ★★★ 핵심: 팝업 처리 후 에디터 재활성화를 위해 충분한 대기 (3초)
+        logger.info("팝업 처리 완료, 에디터 재활성화 대기 중...")
+        await asyncio.sleep(3)
+
+        # ★ 에디터 상태 확인 및 강제 활성화
+        await self._ensure_editor_active()
 
         logger.success("글쓰기 페이지 준비 완료")
 
     async def _handle_popups(self):
-        """팝업창 처리 - 인간 행동 패턴 적용"""
+        """팝업창 처리 - JavaScript 직접 조작 방식 (가장 안정적)"""
         logger.info("팝업 확인 및 처리 중...")
 
-        # 1. "작성 중인 글이 있습니다" 팝업 - 취소 버튼 클릭 (가장 흔함)
-        # ★ 중요: 팝업 인식 후 3초 정도 대기 (사람이 읽고 판단하는 시간 시뮬레이션)
+        # ═══════════════════════════════════════════════════════════════════
+        # 핵심 전략: Playwright의 is_visible()보다 JavaScript 직접 조작이 더 안정적
+        # 팝업 오버레이가 클릭을 가로채는 문제를 JavaScript로 우회
+        # ═══════════════════════════════════════════════════════════════════
+
+        # 최대 10초 동안 팝업 처리 시도 (5회 x 2초)
+        for attempt in range(5):
+            try:
+                # JavaScript로 팝업 상태 확인 및 처리
+                result = await self.page.evaluate("""
+                    () => {
+                        const result = {
+                            overlayFound: false,
+                            popupText: '',
+                            buttonClicked: false,
+                            buttonType: '',
+                            overlayHidden: false
+                        };
+
+                        // 1. 팝업 오버레이 확인
+                        const overlay = document.querySelector('.se-popup-dim, .se-popup-dim-white');
+                        if (!overlay) {
+                            return result;
+                        }
+
+                        // offsetParent로 실제 표시 여부 확인
+                        if (overlay.offsetParent === null && getComputedStyle(overlay).display === 'none') {
+                            return result;
+                        }
+
+                        result.overlayFound = true;
+
+                        // 2. 팝업 내용 확인
+                        const popup = document.querySelector('.se-popup-content, .se-popup');
+                        result.popupText = popup ? popup.innerText.substring(0, 100) : '';
+
+                        // 3. 버튼 찾기 (우선순위: 취소 > 닫기 > 확인)
+                        const buttons = Array.from(document.querySelectorAll('button'));
+
+                        // 취소 버튼 우선 (작성 중인 글 팝업)
+                        let cancelBtn = document.querySelector('.se-popup-button-cancel');
+                        if (!cancelBtn) {
+                            cancelBtn = buttons.find(b => {
+                                const text = b.textContent || '';
+                                return text.includes('취소');
+                            });
+                        }
+
+                        if (cancelBtn) {
+                            cancelBtn.click();
+                            result.buttonClicked = true;
+                            result.buttonType = 'cancel';
+                            return result;
+                        }
+
+                        // 닫기 버튼
+                        const closeBtn = buttons.find(b => {
+                            const text = b.textContent || '';
+                            return text.includes('닫기');
+                        });
+
+                        if (closeBtn) {
+                            closeBtn.click();
+                            result.buttonClicked = true;
+                            result.buttonType = 'close';
+                            return result;
+                        }
+
+                        // 버튼을 못 찾으면 오버레이 강제 숨김
+                        overlay.style.display = 'none';
+                        result.overlayHidden = true;
+
+                        // 팝업 전체도 숨김
+                        const popupEl = overlay.closest('.se-popup');
+                        if (popupEl) {
+                            popupEl.style.display = 'none';
+                        }
+
+                        return result;
+                    }
+                """)
+
+                if result.get("buttonClicked"):
+                    logger.success(
+                        f"✅ 팝업 처리 완료 (버튼: {result.get('buttonType')}, 시도 {attempt + 1}/5)"
+                    )
+                    logger.debug(f"   팝업 내용: {result.get('popupText', '')[:50]}")
+                    await asyncio.sleep(1)  # 팝업 닫힘 애니메이션 대기
+                    continue  # 추가 팝업 확인을 위해 계속
+
+                if result.get("overlayHidden"):
+                    logger.warning(f"⚠️ 팝업 오버레이 강제 숨김 (시도 {attempt + 1}/5)")
+                    await asyncio.sleep(0.5)
+                    continue
+
+                if not result.get("overlayFound"):
+                    # 팝업 없음 - 성공
+                    if attempt == 0:
+                        logger.info("팝업 없음")
+                    break
+
+            except Exception as e:
+                logger.debug(f"팝업 처리 중 오류 (시도 {attempt + 1}/5): {e}")
+
+            await asyncio.sleep(0.5)
+
+        # ═══════════════════════════════════════════════════════════════════
+        # 추가: 도움말 패널 및 기타 팝업 처리
+        # ═══════════════════════════════════════════════════════════════════
         try:
-            cancel_btn = self.page.locator('button:has-text("취소")').first
-            if await cancel_btn.is_visible(timeout=800):
-                logger.info("'작성 중인 글' 팝업 감지 - 사람처럼 3초 대기 후 취소...")
-                await asyncio.sleep(random.uniform(2.5, 3.5))  # 사람이 팝업 읽는 시간
-                await cancel_btn.click()
-                logger.info("'작성 중인 글' 팝업 - 취소 클릭 완료")
-                await HumanDelay.wait('popup_close')
+            help_closed = await self.page.evaluate("""
+                () => {
+                    let closed = 0;
+
+                    // 도움말 패널 닫기 버튼 (여러 셀렉터 시도)
+                    const helpCloseSelectors = [
+                        'button.se-help-panel-close-button',
+                        '.se-help-panel-close-button',
+                        '[class*="help"] button[class*="close"]',
+                        '.container__HW_tc button',
+                        '[class*="container__HW"] button'
+                    ];
+
+                    for (const selector of helpCloseSelectors) {
+                        const btn = document.querySelector(selector);
+                        if (btn && btn.offsetParent !== null) {
+                            btn.click();
+                            closed++;
+                            break;
+                        }
+                    }
+
+                    // 도움말 컨테이너 강제 숨김
+                    const helpContainers = document.querySelectorAll('[class*="container__HW"], .se-help-panel, [class*="help-panel"]');
+                    helpContainers.forEach(el => {
+                        if (el.offsetParent !== null) {
+                            el.style.display = 'none';
+                            closed++;
+                        }
+                    });
+
+                    // 남은 팝업 버튼들 처리
+                    const popupButtons = document.querySelectorAll('.se-popup-button-cancel, .se-popup-close');
+                    popupButtons.forEach(btn => {
+                        if (btn.offsetParent !== null) {
+                            btn.click();
+                            closed++;
+                        }
+                    });
+
+                    return closed;
+                }
+            """)
+
+            if help_closed > 0:
+                logger.info(f"도움말/팝업 {help_closed}개 닫음")
+
         except:
             pass
 
-        # 2. 도움말 패널 닫기 + 네이버 팝업 취소 버튼
-        quick_selectors = [
-            'button.se-help-panel-close-button',
-            'button.se-popup-button-cancel',
-            '.se-popup-close',
-        ]
+        # ═══════════════════════════════════════════════════════════════════
+        # 최종 확인: 남은 오버레이 강제 제거
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            cleanup_result = await self.page.evaluate("""
+                () => {
+                    let cleaned = 0;
+                    const overlays = document.querySelectorAll('.se-popup-dim, .se-popup-dim-white');
+                    overlays.forEach(overlay => {
+                        if (overlay.offsetParent !== null || getComputedStyle(overlay).display !== 'none') {
+                            overlay.style.display = 'none';
+                            cleaned++;
+                        }
+                    });
 
-        for selector in quick_selectors:
-            try:
-                btn = self.page.locator(selector).first
-                if await btn.is_visible(timeout=300):
-                    await HumanDelay.wait('before_click')
-                    await btn.click()
-                    logger.info(f"팝업 닫음: {selector}")
-                    await HumanDelay.wait('popup_close')
-            except:
-                pass
+                    // se-popup 전체 숨기기
+                    const popups = document.querySelectorAll('.se-popup');
+                    popups.forEach(popup => {
+                        const display = getComputedStyle(popup).display;
+                        if (display !== 'none') {
+                            popup.style.display = 'none';
+                            cleaned++;
+                        }
+                    });
 
-        # 3. 기타 팝업 - 체크
-        other_selectors = [
-            'button[aria-label="닫기"]',
-            'button:has-text("닫기")',
-            '.popup_close',
-            '.modal_close',
-        ]
+                    return cleaned;
+                }
+            """)
 
-        for selector in other_selectors:
-            try:
-                popup = self.page.locator(selector).first
-                if await popup.is_visible(timeout=200):
-                    await HumanDelay.wait('micro')
-                    await popup.click()
-                    logger.info(f"팝업 닫음: {selector}")
-                    await HumanDelay.wait('micro')
-            except:
-                pass
+            if cleanup_result > 0:
+                logger.warning(f"⚠️ 남은 팝업 {cleanup_result}개 강제 숨김")
+
+        except:
+            pass
 
         logger.info("팝업 처리 완료")
 
@@ -287,9 +465,9 @@ class NaverBlogPoster:
         logger.info("에디터 로드 대기 중...")
 
         editor_selectors = [
-            '.se-component-content',
+            ".se-component-content",
             '[contenteditable="true"]',
-            '.se-text-paragraph',
+            ".se-text-paragraph",
             'iframe[id*="editor"]',
         ]
 
@@ -303,45 +481,185 @@ class NaverBlogPoster:
 
         logger.warning("에디터를 찾지 못했지만 계속 진행")
 
+    async def _ensure_editor_active(self):
+        """에디터가 활성화되었는지 확인하고 강제 활성화"""
+        try:
+            # 모든 부모 요소의 display/visibility 강제 설정
+            await self.page.evaluate("""
+                () => {
+                    // 제목 영역 부모 체인 모두 표시
+                    const titleSection = document.querySelector('.se-section-documentTitle');
+                    if (titleSection) {
+                        let current = titleSection;
+                        while (current && current !== document.body) {
+                            current.style.display = '';
+                            current.style.visibility = 'visible';
+                            current.style.opacity = '1';
+                            current.style.pointerEvents = 'auto';
+                            current = current.parentElement;
+                        }
+                    }
+                    
+                    // 에디터 컨테이너 활성화
+                    const editor = document.querySelector('.se-component-content');
+                    if (editor) {
+                        editor.style.pointerEvents = 'auto';
+                    }
+                    
+                    // 남은 오버레이 완전 제거
+                    const overlays = document.querySelectorAll('.se-popup-dim, .se-popup-dim-white, .se-popup');
+                    overlays.forEach(el => {
+                        el.style.display = 'none';
+                        el.remove();  // DOM에서 완전 제거
+                    });
+                }
+            """)
+            logger.info("에디터 강제 활성화 완료")
+        except Exception as e:
+            logger.debug(f"에디터 활성화 중 오류: {e}")
+
     async def input_title(self, title: str):
-        """제목 입력 - 인간 행동 패턴 적용"""
+        """
+        제목 입력 - 4단계 폴백 전략
+
+        1) bounding_box 좌표 클릭 (offsetParent=null이어도 작동)
+        2) JavaScript dispatchEvent로 실제 이벤트 발생
+        3) Playwright locator 클릭
+        4) Tab 키로 이동
+        """
         logger.info(f"제목 입력 중: {title[:30]}...")
 
-        # 네이버 스마트에디터 ONE - 제목은 .se-section-documentTitle 안의 p 태그
+        # ★★★ 방법 1: bounding_box 좌표 클릭 (가장 안정적 - offsetParent와 무관) ★★★
+        try:
+            title_section = await self.page.query_selector(".se-section-documentTitle")
+            if title_section:
+                box = await title_section.bounding_box()
+                if box and box["width"] > 0 and box["height"] > 0:
+                    # 제목 영역 중앙 클릭
+                    click_x = box["x"] + box["width"] / 2
+                    click_y = box["y"] + box["height"] / 2
+
+                    logger.info(f"제목 영역 좌표 클릭: ({click_x:.0f}, {click_y:.0f})")
+                    await self.page.mouse.click(click_x, click_y)
+                    await asyncio.sleep(0.5)
+
+                    # 포커스 확인
+                    focused = await self.page.evaluate("""
+                        () => {
+                            const active = document.activeElement;
+                            const titleSection = document.querySelector('.se-section-documentTitle');
+                            return titleSection && titleSection.contains(active);
+                        }
+                    """)
+
+                    if focused:
+                        logger.info("✅ 제목 영역 포커스 성공 (bounding_box)")
+                        await self._type_title(title)
+                        return
+                    else:
+                        logger.debug("bounding_box 클릭 후 포커스 확인 실패")
+        except Exception as e:
+            logger.debug(f"bounding_box 클릭 실패: {e}")
+
+        # ★★★ 방법 2: JavaScript dispatchEvent로 실제 이벤트 발생 ★★★
+        try:
+            click_result = await self.page.evaluate("""
+                () => {
+                    const selectors = [
+                        '.se-section-documentTitle p',
+                        '.se-section-documentTitle .se-text-paragraph',
+                        '.se-documentTitle p',
+                        '.se-section-documentTitle'
+                    ];
+                    
+                    for (const sel of selectors) {
+                        const el = document.querySelector(sel);
+                        if (!el) continue;
+                        
+                        // 부모 체인 강제 표시
+                        let current = el;
+                        while (current && current !== document.body) {
+                            current.style.display = '';
+                            current.style.visibility = 'visible';
+                            current.style.pointerEvents = 'auto';
+                            current = current.parentElement;
+                        }
+                        
+                        // 실제 마우스 이벤트와 동일한 이벤트 시퀀스
+                        const rect = el.getBoundingClientRect();
+                        const centerX = rect.left + rect.width / 2;
+                        const centerY = rect.top + rect.height / 2;
+                        
+                        ['mousedown', 'mouseup', 'click'].forEach(eventType => {
+                            el.dispatchEvent(new MouseEvent(eventType, {
+                                view: window,
+                                bubbles: true,
+                                cancelable: true,
+                                clientX: centerX,
+                                clientY: centerY
+                            }));
+                        });
+                        
+                        // 포커스 이벤트
+                        el.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+                        el.focus();
+                        
+                        return { success: true, selector: sel };
+                    }
+                    return { success: false };
+                }
+            """)
+
+            if click_result.get("success"):
+                logger.info(f"제목 영역 dispatchEvent: {click_result.get('selector')}")
+                await asyncio.sleep(0.5)
+                await self._type_title(title)
+                return
+        except Exception as e:
+            logger.debug(f"dispatchEvent 실패: {e}")
+
+        # ★★★ 방법 3: Playwright locator 강제 클릭 ★★★
         title_selectors = [
-            '.se-section-documentTitle p',
-            '.se-section-documentTitle .se-text-paragraph',
-            '.se-documentTitle p',
+            ".se-section-documentTitle p",
+            ".se-section-documentTitle .se-text-paragraph",
+            ".se-documentTitle p",
+            ".se-section-documentTitle",
         ]
 
         for selector in title_selectors:
             try:
                 title_el = self.page.locator(selector).first
-                if await title_el.is_visible(timeout=3000):
-                    # 클릭하여 포커스 (인간적 딜레이)
-                    await HumanDelay.wait('before_click')
-                    await title_el.click()
-                    await HumanDelay.wait('after_click')
-                    logger.info(f"제목 영역 클릭: {selector}")
-
-                    # 기존 내용 삭제
-                    await self.page.keyboard.press('Meta+A')
-                    await HumanDelay.wait('micro')
-                    await self.page.keyboard.press('Backspace')
-                    await HumanDelay.wait('before_type')
-
-                    # 직접 타이핑 (설정 파일 기반 속도)
-                    await self.page.keyboard.type(title, delay=HumanDelay.get_typing_delay('title'))
-
-                    logger.success("제목 입력 완료")
-                    return
+                # force=True: 요소가 가려져 있어도 강제 클릭
+                await title_el.click(force=True, timeout=3000)
+                logger.info(f"제목 영역 강제 클릭: {selector}")
+                await asyncio.sleep(0.3)
+                await self._type_title(title)
+                return
             except Exception as e:
-                logger.debug(f"제목 셀렉터 실패 {selector}: {e}")
+                logger.debug(f"Playwright 클릭 실패 {selector}: {e}")
                 continue
 
-        # 폴백: 그냥 타이핑
-        logger.warning("제목 입력란을 찾지 못함, 직접 타이핑 시도")
-        await self.page.keyboard.type(title, delay=HumanDelay.get_typing_delay('title'))
+        # ★★★ 방법 4: 최후의 수단 - Tab 키 이동 ★★★
+        logger.warning("제목 입력란을 찾지 못함, Tab 키로 이동 시도")
+
+        # 페이지 시작 부분으로 이동 후 Tab
+        await self.page.keyboard.press("Home")
+        await asyncio.sleep(0.2)
+        await self.page.keyboard.press("Tab")
+        await asyncio.sleep(0.3)
+        await self._type_title(title)
+
+    async def _type_title(self, title: str):
+        """제목 텍스트 입력 (공통 로직)"""
+        # 기존 내용 삭제
+        await self.page.keyboard.press("Meta+A")
+        await asyncio.sleep(0.1)
+        await self.page.keyboard.press("Backspace")
+        await asyncio.sleep(0.2)
+
+        # 제목 타이핑
+        await self.page.keyboard.type(title, delay=HumanDelay.get_typing_delay("title"))
+        logger.success("✅ 제목 입력 완료")
 
     async def _clear_text_formatting(self):
         """텍스트 서식 완전 초기화 (취소선, 굵게, 기울임 등 모두 해제)"""
@@ -352,7 +670,7 @@ class NaverBlogPoster:
             # 네이버 스마트에디터 ONE 취소선 버튼 구조:
             # <button class="se-strikethrough-toolbar-button se-property-toolbar-toggle-button __se-sentry"
             #         data-name="strikethrough" data-type="toggle" ...>
-            strikethrough_cleared = await self.page.evaluate('''
+            strikethrough_cleared = await self.page.evaluate("""
                 () => {
                     // 정확한 셀렉터로 취소선 버튼 찾기 (우선순위 순)
                     const selectors = [
@@ -393,18 +711,18 @@ class NaverBlogPoster:
 
                     return activeButtons.length > 0;
                 }
-            ''')
+            """)
 
             if strikethrough_cleared:
                 logger.info("✅ 취소선/서식 버튼 강제 해제됨")
                 await asyncio.sleep(0.3)
 
             # 방법 1: Escape 키로 현재 선택/서식 모드 해제
-            await self.page.keyboard.press('Escape')
+            await self.page.keyboard.press("Escape")
             await asyncio.sleep(0.2)
 
             # 방법 3: JavaScript로 모든 서식 버튼 상태 확인 및 해제
-            formatting_cleared = await self.page.evaluate('''
+            formatting_cleared = await self.page.evaluate("""
                 () => {
                     let clearedCount = 0;
                     const toolbar = document.querySelector('.se-toolbar');
@@ -482,7 +800,7 @@ class NaverBlogPoster:
 
                     return clearedCount;
                 }
-            ''')
+            """)
 
             if formatting_cleared > 0:
                 logger.info(f"✅ {formatting_cleared}개의 서식 버튼 해제됨")
@@ -490,9 +808,9 @@ class NaverBlogPoster:
 
             # 방법 4: 특정 취소선 버튼 직접 검색 (정확한 셀렉터 2025-12-26 업데이트)
             strikethrough_selectors = [
-                'button.se-strikethrough-toolbar-button',  # 가장 정확한 클래스
+                "button.se-strikethrough-toolbar-button",  # 가장 정확한 클래스
                 'button[data-name="strikethrough"]',
-                '.se-strikethrough-toolbar-button',
+                ".se-strikethrough-toolbar-button",
                 'button[data-name="strike"]',
                 'button[aria-label*="취소선"]',
                 'button[title*="취소선"]',
@@ -501,33 +819,36 @@ class NaverBlogPoster:
             for selector in strikethrough_selectors:
                 try:
                     # 버튼 또는 버튼 부모 찾기
-                    if 'svg' in selector:
+                    if "svg" in selector:
                         el = self.page.locator(selector).first
                         if await el.is_visible(timeout=300):
                             btn = await el.evaluate('el => el.closest("button")')
                             if btn:
                                 # 상태 확인 후 클릭
-                                is_active = await self.page.evaluate('''
+                                is_active = await self.page.evaluate(
+                                    """
                                     btn => {
                                         if (!btn) return false;
                                         const cls = btn.className || '';
                                         const pressed = btn.getAttribute('aria-pressed');
                                         return cls.includes('active') || pressed === 'true';
                                     }
-                                ''', btn)
+                                """,
+                                    btn,
+                                )
                                 if is_active:
-                                    await self.page.evaluate('btn => btn.click()', btn)
+                                    await self.page.evaluate("btn => btn.click()", btn)
                                     logger.info(f"✅ 취소선 버튼 직접 해제: {selector}")
                     else:
                         btn = self.page.locator(selector).first
                         if await btn.is_visible(timeout=300):
-                            is_active = await btn.evaluate('''
+                            is_active = await btn.evaluate("""
                                 btn => {
                                     const cls = btn.className || '';
                                     const pressed = btn.getAttribute('aria-pressed');
                                     return cls.includes('active') || pressed === 'true';
                                 }
-                            ''')
+                            """)
                             if is_active:
                                 await btn.click()
                                 logger.info(f"✅ 취소선 버튼 직접 해제: {selector}")
@@ -536,7 +857,7 @@ class NaverBlogPoster:
                     continue
 
             # 방법 5: 에디터 영역의 <s>, <strike>, <del> 태그 직접 제거
-            await self.page.evaluate('''
+            await self.page.evaluate("""
                 () => {
                     const editor = document.querySelector('.se-component-content[contenteditable="true"]') ||
                                    document.querySelector('[contenteditable="true"]');
@@ -549,7 +870,7 @@ class NaverBlogPoster:
                         tag.parentNode.replaceChild(text, tag);
                     });
                 }
-            ''')
+            """)
 
             logger.success("🔧 텍스트 서식 초기화 완료")
 
@@ -568,15 +889,17 @@ class NaverBlogPoster:
         """
         try:
             # 1. 텍스트 입력
-            await self.page.keyboard.type(text.strip(), delay=HumanDelay.get_typing_delay('content'))
+            await self.page.keyboard.type(
+                text.strip(), delay=HumanDelay.get_typing_delay("content")
+            )
             await asyncio.sleep(0.2)
 
             # 2. 방금 입력한 텍스트 전체 선택 (Shift+Home)
-            await self.page.keyboard.press('Shift+Home')
+            await self.page.keyboard.press("Shift+Home")
             await asyncio.sleep(0.2)
 
             # 3. 제목 서식 버튼 클릭 (text-format 드롭다운)
-            heading_applied = await self.page.evaluate(f'''
+            heading_applied = await self.page.evaluate(f"""
                 () => {{
                     // 제목 서식 드롭다운 버튼 찾기
                     const formatBtn = document.querySelector('button[data-name="text-format"]') ||
@@ -590,7 +913,7 @@ class NaverBlogPoster:
                     formatBtn.click();
                     return true;
                 }}
-            ''')
+            """)
 
             if heading_applied:
                 await asyncio.sleep(0.3)
@@ -617,7 +940,7 @@ class NaverBlogPoster:
                 await asyncio.sleep(0.2)
 
             # 5. 커서를 줄 끝으로 이동
-            await self.page.keyboard.press('End')
+            await self.page.keyboard.press("End")
             await asyncio.sleep(0.1)
 
             logger.debug(f"소제목 서식 적용: {text[:20]}...")
@@ -625,7 +948,9 @@ class NaverBlogPoster:
         except Exception as e:
             logger.warning(f"소제목 서식 적용 실패 (일반 텍스트로 처리): {e}")
             # 실패 시 일반 텍스트로 입력
-            await self.page.keyboard.type(text.strip(), delay=HumanDelay.get_typing_delay('content'))
+            await self.page.keyboard.type(
+                text.strip(), delay=HumanDelay.get_typing_delay("content")
+            )
 
     async def _apply_bold_format(self, text: str):
         """
@@ -637,7 +962,7 @@ class NaverBlogPoster:
         import re
 
         # **텍스트** 패턴 파싱
-        pattern = r'\*\*(.+?)\*\*'
+        pattern = r"\*\*(.+?)\*\*"
         parts = re.split(pattern, text)
 
         for i, part in enumerate(parts):
@@ -646,16 +971,20 @@ class NaverBlogPoster:
 
             if i % 2 == 1:  # 홀수 인덱스 = 굵게 처리할 부분
                 # Bold 시작
-                await self.page.keyboard.press('Meta+KeyB')  # Cmd+B
+                await self.page.keyboard.press("Meta+KeyB")  # Cmd+B
                 await asyncio.sleep(0.1)
 
-                await self.page.keyboard.type(part, delay=HumanDelay.get_typing_delay('content'))
+                await self.page.keyboard.type(
+                    part, delay=HumanDelay.get_typing_delay("content")
+                )
 
                 # Bold 종료
-                await self.page.keyboard.press('Meta+KeyB')
+                await self.page.keyboard.press("Meta+KeyB")
                 await asyncio.sleep(0.1)
             else:  # 일반 텍스트
-                await self.page.keyboard.type(part, delay=HumanDelay.get_typing_delay('content'))
+                await self.page.keyboard.type(
+                    part, delay=HumanDelay.get_typing_delay("content")
+                )
 
         logger.debug(f"굵게 서식 적용: {text[:30]}...")
 
@@ -668,7 +997,7 @@ class NaverBlogPoster:
         """
         try:
             # 1. 인용구 버튼 클릭
-            quote_applied = await self.page.evaluate('''
+            quote_applied = await self.page.evaluate("""
                 () => {
                     const quoteBtn = document.querySelector('button[data-name="quotation"]') ||
                                     document.querySelector('.se-quotation-toolbar-button');
@@ -679,20 +1008,22 @@ class NaverBlogPoster:
                     }
                     return false;
                 }
-            ''')
+            """)
 
             await asyncio.sleep(0.2)
 
             # 2. 텍스트 입력
-            await self.page.keyboard.type(text.strip(), delay=HumanDelay.get_typing_delay('content'))
+            await self.page.keyboard.type(
+                text.strip(), delay=HumanDelay.get_typing_delay("content")
+            )
             await asyncio.sleep(0.2)
 
             # 3. 인용구 모드 해제 (Enter 2번 또는 인용구 버튼 다시 클릭)
-            await self.page.keyboard.press('Enter')
+            await self.page.keyboard.press("Enter")
             await asyncio.sleep(0.1)
 
             # 인용구 버튼 다시 클릭하여 해제
-            await self.page.evaluate('''
+            await self.page.evaluate("""
                 () => {
                     const quoteBtn = document.querySelector('button[data-name="quotation"]') ||
                                     document.querySelector('.se-quotation-toolbar-button');
@@ -701,13 +1032,15 @@ class NaverBlogPoster:
                         console.log('인용구 모드 해제');
                     }
                 }
-            ''')
+            """)
 
             logger.debug(f"인용구 서식 적용: {text[:30]}...")
 
         except Exception as e:
             logger.warning(f"인용구 서식 적용 실패 (일반 텍스트로 처리): {e}")
-            await self.page.keyboard.type(text.strip(), delay=HumanDelay.get_typing_delay('content'))
+            await self.page.keyboard.type(
+                text.strip(), delay=HumanDelay.get_typing_delay("content")
+            )
 
     async def _process_markdown_line(self, line: str) -> bool:
         """
@@ -721,20 +1054,20 @@ class NaverBlogPoster:
         line_stripped = line.strip()
 
         # 1. 소제목 (## 또는 ###)
-        if line_stripped.startswith('### '):
+        if line_stripped.startswith("### "):
             await self._apply_heading_format(line_stripped[4:], level=3)
             return True
-        elif line_stripped.startswith('## '):
+        elif line_stripped.startswith("## "):
             await self._apply_heading_format(line_stripped[3:], level=2)
             return True
 
         # 2. 인용구 (>)
-        if line_stripped.startswith('> '):
+        if line_stripped.startswith("> "):
             await self._apply_quote_format(line_stripped[2:])
             return True
 
         # 3. 굵게 (**텍스트**)
-        if '**' in line_stripped:
+        if "**" in line_stripped:
             await self._apply_bold_format(line_stripped)
             return True
 
@@ -748,9 +1081,9 @@ class NaverBlogPoster:
 
         # 본문 영역 클릭
         content_selectors = [
-            '.se-section-text p',
-            '.se-section-text .se-text-paragraph',
-            '.se-component:not(.se-documentTitle) .se-text-paragraph',
+            ".se-section-text p",
+            ".se-section-text .se-text-paragraph",
+            ".se-component:not(.se-documentTitle) .se-text-paragraph",
         ]
 
         clicked = False
@@ -758,7 +1091,7 @@ class NaverBlogPoster:
             try:
                 content_el = self.page.locator(selector).first
                 if await content_el.is_visible(timeout=2000):
-                    await HumanDelay.wait('between_fields')
+                    await HumanDelay.wait("between_fields")
                     await content_el.click()
                     clicked = True
                     logger.info(f"본문 영역 클릭: {selector}")
@@ -767,7 +1100,7 @@ class NaverBlogPoster:
                 continue
 
         if not clicked:
-            await self.page.keyboard.press('Tab')
+            await self.page.keyboard.press("Tab")
 
         await asyncio.sleep(0.3)
 
@@ -782,7 +1115,7 @@ class NaverBlogPoster:
 
         # ★ 마크다운 서식 지원 타이핑 방식
         logger.info("마크다운 서식 지원 본문 입력 시작...")
-        lines = content.split('\n')
+        lines = content.split("\n")
         markdown_count = 0
 
         for i, line in enumerate(lines):
@@ -792,14 +1125,16 @@ class NaverBlogPoster:
 
                 if is_markdown:
                     markdown_count += 1
-                    logger.debug(f"줄 {i+1}/{len(lines)} 마크다운 서식 적용")
+                    logger.debug(f"줄 {i + 1}/{len(lines)} 마크다운 서식 적용")
                 else:
                     # 일반 텍스트 타이핑
-                    await self.page.keyboard.type(line, delay=HumanDelay.get_typing_delay('content'))
-                    logger.debug(f"줄 {i+1}/{len(lines)} 일반 텍스트 입력")
+                    await self.page.keyboard.type(
+                        line, delay=HumanDelay.get_typing_delay("content")
+                    )
+                    logger.debug(f"줄 {i + 1}/{len(lines)} 일반 텍스트 입력")
 
             if i < len(lines) - 1:
-                await self.page.keyboard.press('Enter')
+                await self.page.keyboard.press("Enter")
 
             # 줄 간 짧은 휴식
             await HumanDelay.random_wait(0.1, 0.2)
@@ -817,18 +1152,20 @@ class NaverBlogPoster:
         logger.info("🔧 발행 전 취소선 제거 시작...")
         try:
             # 1. 본문 영역 클릭하여 포커스
-            content_el = self.page.locator('.se-section-text p, [contenteditable="true"]').first
+            content_el = self.page.locator(
+                '.se-section-text p, [contenteditable="true"]'
+            ).first
             if await content_el.is_visible(timeout=1000):
                 await content_el.click()
                 await asyncio.sleep(0.3)
 
             # 2. 전체 선택 (Cmd+A)
-            await self.page.keyboard.press('Meta+KeyA')
+            await self.page.keyboard.press("Meta+KeyA")
             await asyncio.sleep(0.3)
             logger.info("전체 텍스트 선택됨")
 
             # 3. 취소선 버튼 찾아서 해제 (정확한 셀렉터 2025-12-26 업데이트)
-            strike_cleared = await self.page.evaluate('''
+            strike_cleared = await self.page.evaluate("""
                 () => {
                     // 정확한 셀렉터로 취소선 버튼 찾기
                     const selectors = [
@@ -862,18 +1199,18 @@ class NaverBlogPoster:
                     allSelected.forEach(btn => btn.click());
                     return allSelected.length > 0;
                 }
-            ''')
+            """)
 
             if strike_cleared:
                 logger.info("✅ 발행 전 취소선 버튼 해제됨 (se-is-selected)")
                 await asyncio.sleep(0.5)
 
             # 4. 선택 해제 (Escape)
-            await self.page.keyboard.press('Escape')
+            await self.page.keyboard.press("Escape")
             await asyncio.sleep(0.3)
 
             # 5. DOM에서 취소선 태그 직접 제거
-            removed_count = await self.page.evaluate('''
+            removed_count = await self.page.evaluate("""
                 () => {
                     let count = 0;
                     const editor = document.querySelector('[contenteditable="true"]');
@@ -906,7 +1243,7 @@ class NaverBlogPoster:
 
                     return count;
                 }
-            ''')
+            """)
 
             if removed_count > 0:
                 logger.info(f"✅ DOM에서 취소선 {removed_count}개 제거됨")
@@ -920,13 +1257,13 @@ class NaverBlogPoster:
 
         # 0단계: 도움말 패널 닫기 + JS로 숨기기
         try:
-            await self.page.evaluate('''
+            await self.page.evaluate("""
                 const helpPanels = document.querySelectorAll('[class*="help-panel"], [class*="container__HW"]');
                 helpPanels.forEach(el => el.style.display = 'none');
-            ''')
-            help_panel = self.page.locator('button.se-help-panel-close-button').first
+            """)
+            help_panel = self.page.locator("button.se-help-panel-close-button").first
             if await help_panel.is_visible(timeout=500):
-                await HumanDelay.wait('before_click')
+                await HumanDelay.wait("before_click")
                 await help_panel.click()
                 logger.info("도움말 패널 닫음")
         except:
@@ -935,8 +1272,8 @@ class NaverBlogPoster:
         # 1단계: 상단 발행 버튼 클릭
         publish_selectors = [
             'button[class*="publish_btn"]',
-            'button.publish_btn__m9KHH',
-            'button.se-publish-button',
+            "button.publish_btn__m9KHH",
+            "button.se-publish-button",
         ]
 
         clicked = False
@@ -944,7 +1281,7 @@ class NaverBlogPoster:
             try:
                 publish_btn = self.page.locator(selector).first
                 if await publish_btn.is_visible(timeout=800):
-                    await HumanDelay.wait('before_click')
+                    await HumanDelay.wait("before_click")
                     await publish_btn.click()
                     logger.info(f"1단계 - 발행 버튼 클릭: {selector}")
                     clicked = True
@@ -955,7 +1292,7 @@ class NaverBlogPoster:
         if not clicked:
             logger.warning("발행 버튼을 찾지 못함")
 
-        await HumanDelay.wait('publish_wait')
+        await HumanDelay.wait("publish_wait")
 
         # 2단계: 발행 설정 팝업에서 최종 발행 버튼 클릭
         await self._handle_publish_popup()
@@ -966,21 +1303,23 @@ class NaverBlogPoster:
             await asyncio.sleep(1)
             current_url = self.page.url
             # postwrite가 아닌 다른 URL로 이동하면 발행 완료
-            if 'postwrite' not in current_url.lower():
+            if "postwrite" not in current_url.lower():
                 logger.success(f"✅ 포스트 발행 완료: {current_url}")
                 return current_url
 
         # URL이 변경되지 않았으면 블로그로 이동하여 최신 글 확인
         logger.info("블로그에서 최신 글 확인 중...")
         try:
-            await self.page.goto(f'https://blog.naver.com/{self.naver_id}')
-            await HumanDelay.wait('page_load')
+            await self.page.goto(f"https://blog.naver.com/{self.naver_id}")
+            await HumanDelay.wait("page_load")
 
             # 최신 글 링크 찾기
-            latest_post = self.page.locator('a[href*="/PostView.naver"], a[href*="logNo="]').first
+            latest_post = self.page.locator(
+                'a[href*="/PostView.naver"], a[href*="logNo="]'
+            ).first
             if await latest_post.is_visible(timeout=5000):
-                post_url = await latest_post.get_attribute('href')
-                if post_url and not post_url.startswith('http'):
+                post_url = await latest_post.get_attribute("href")
+                if post_url and not post_url.startswith("http"):
                     post_url = f"https://blog.naver.com{post_url}"
                 logger.success(f"✅ 최신 글 발견: {post_url}")
                 return post_url
@@ -1007,7 +1346,7 @@ class NaverBlogPoster:
         for selector in publish_layer_selectors:
             try:
                 layer = self.page.locator(selector).first
-                await layer.wait_for(state='visible', timeout=3000)
+                await layer.wait_for(state="visible", timeout=3000)
                 logger.info(f"발행 설정 레이어 발견: {selector}")
                 layer_found = True
                 break
@@ -1018,7 +1357,7 @@ class NaverBlogPoster:
             logger.warning("발행 설정 레이어를 명시적으로 찾지 못함 - 계속 진행")
 
         # 레이어 애니메이션 완료 + 인간적 인식 시간
-        await HumanDelay.wait('layer_appear')
+        await HumanDelay.wait("layer_appear")
 
         # 2단계: 최종 발행 버튼 찾기
         final_publish_selectors = [
@@ -1033,7 +1372,7 @@ class NaverBlogPoster:
                 btn = self.page.locator(selector).first
                 if await btn.is_visible(timeout=500):
                     await btn.scroll_into_view_if_needed()
-                    await HumanDelay.wait('before_click')
+                    await HumanDelay.wait("before_click")
                     await btn.click()
                     logger.info(f"2단계 - 최종 발행 버튼 클릭: {selector}")
                     await asyncio.sleep(1)
@@ -1056,16 +1395,16 @@ class NaverBlogPoster:
             if len(visible_btns) >= 2:
                 final_btn = visible_btns[-1]
                 await final_btn.scroll_into_view_if_needed()
-                await HumanDelay.wait('before_click')
+                await HumanDelay.wait("before_click")
                 await final_btn.click()
                 logger.info("2단계 - 최종 발행 버튼 클릭 (폴백)")
-                await HumanDelay.wait('publish_wait')
+                await HumanDelay.wait("publish_wait")
                 return
             elif len(visible_btns) == 1:
-                await HumanDelay.wait('before_click')
+                await HumanDelay.wait("before_click")
                 await visible_btns[0].click()
                 logger.info("2단계 - 발행 버튼 재클릭")
-                await HumanDelay.wait('publish_wait')
+                await HumanDelay.wait("publish_wait")
                 return
 
         except Exception as e:
@@ -1073,7 +1412,7 @@ class NaverBlogPoster:
 
         # JavaScript로 직접 발행 버튼 클릭 시도
         try:
-            await self.page.evaluate('''
+            await self.page.evaluate("""
                 const buttons = Array.from(document.querySelectorAll('button'));
                 const publishBtns = buttons.filter(btn => {
                     const text = btn.innerText || btn.textContent;
@@ -1084,9 +1423,9 @@ class NaverBlogPoster:
                 } else if (publishBtns.length === 1) {
                     publishBtns[0].click();
                 }
-            ''')
+            """)
             logger.info("2단계 - JavaScript로 최종 발행 버튼 클릭")
-            await HumanDelay.wait('publish_wait')
+            await HumanDelay.wait("publish_wait")
         except Exception as e:
             logger.warning(f"JavaScript 발행 클릭 실패: {e}")
 
@@ -1117,9 +1456,7 @@ class NaverBlogPoster:
             '''
 
             result = subprocess.run(
-                ['osascript', '-e', script],
-                capture_output=True,
-                text=True
+                ["osascript", "-e", script], capture_output=True, text=True
             )
 
             if result.returncode != 0:
@@ -1129,9 +1466,7 @@ class NaverBlogPoster:
                 set the clipboard to (read theFile as JPEG picture)
                 '''
                 result = subprocess.run(
-                    ['osascript', '-e', script_jpeg],
-                    capture_output=True,
-                    text=True
+                    ["osascript", "-e", script_jpeg], capture_output=True, text=True
                 )
 
             if result.returncode == 0:
@@ -1142,8 +1477,8 @@ class NaverBlogPoster:
 
             # 본문 영역 클릭하여 포커스
             content_selectors = [
-                '.se-section-text p',
-                '.se-section-text .se-text-paragraph',
+                ".se-section-text p",
+                ".se-section-text .se-text-paragraph",
                 '[contenteditable="true"]',
             ]
 
@@ -1160,21 +1495,21 @@ class NaverBlogPoster:
             await asyncio.sleep(0.5)
 
             # ★ Cmd+V로 이미지 붙여넣기
-            await self.page.keyboard.press('Meta+KeyV')
+            await self.page.keyboard.press("Meta+KeyV")
             logger.info("Cmd+V로 이미지 붙여넣기 실행")
 
             # 이미지 업로드 완료 대기
             await asyncio.sleep(3)
 
             # 이미지가 에디터에 삽입되었는지 확인
-            image_inserted = await self.page.evaluate('''
+            image_inserted = await self.page.evaluate("""
                 () => {
                     const editor = document.querySelector('[contenteditable="true"]');
                     if (!editor) return false;
                     const images = editor.querySelectorAll('img');
                     return images.length > 0;
                 }
-            ''')
+            """)
 
             if image_inserted:
                 logger.success("📷 이미지 삽입 완료!")
@@ -1187,7 +1522,9 @@ class NaverBlogPoster:
             logger.warning(f"이미지 삽입 실패 (무시하고 계속): {e}")
             return False
 
-    async def post(self, title: str, content: str, image_path: str = None, images: list = None) -> dict:
+    async def post(
+        self, title: str, content: str, image_path: str = None, images: list = None
+    ) -> dict:
         """
         전체 포스팅 프로세스 실행
 
@@ -1215,7 +1552,9 @@ class NaverBlogPoster:
 
             # 2. 로그인 상태 확인
             if not await self.check_login_status():
-                raise Exception("로그인이 필요합니다. manual_login_clipboard.py를 먼저 실행하세요.")
+                raise Exception(
+                    "로그인이 필요합니다. manual_login_clipboard.py를 먼저 실행하세요."
+                )
 
             # 3. 글쓰기 페이지로 이동
             await self.navigate_to_write_page()
@@ -1260,7 +1599,7 @@ class NaverBlogPoster:
         logger.info(f"📝 본문 + 이미지 {len(images)}개 삽입 시작...")
 
         # 본문을 문단(빈 줄 기준)으로 분리
-        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
 
         if not paragraphs:
             paragraphs = [content]
@@ -1289,9 +1628,9 @@ class NaverBlogPoster:
 
         # 본문 영역 클릭
         content_selectors = [
-            '.se-section-text p',
-            '.se-section-text .se-text-paragraph',
-            '.se-component:not(.se-documentTitle) .se-text-paragraph',
+            ".se-section-text p",
+            ".se-section-text .se-text-paragraph",
+            ".se-component:not(.se-documentTitle) .se-text-paragraph",
         ]
 
         clicked = False
@@ -1299,7 +1638,7 @@ class NaverBlogPoster:
             try:
                 content_el = self.page.locator(selector).first
                 if await content_el.is_visible(timeout=2000):
-                    await HumanDelay.wait('between_fields')
+                    await HumanDelay.wait("between_fields")
                     await content_el.click()
                     clicked = True
                     logger.info(f"본문 영역 클릭: {selector}")
@@ -1308,7 +1647,7 @@ class NaverBlogPoster:
                 continue
 
         if not clicked:
-            await self.page.keyboard.press('Tab')
+            await self.page.keyboard.press("Tab")
 
         await asyncio.sleep(0.3)
 
@@ -1327,7 +1666,7 @@ class NaverBlogPoster:
 
         for para_idx, paragraph in enumerate(paragraphs):
             # 문단 입력 (마크다운 서식 처리)
-            lines = paragraph.split('\n')
+            lines = paragraph.split("\n")
             for i, line in enumerate(lines):
                 if line.strip():
                     # ★ 마크다운 서식 처리 시도
@@ -1335,14 +1674,16 @@ class NaverBlogPoster:
                     if is_markdown:
                         markdown_count += 1
                     else:
-                        await self.page.keyboard.type(line, delay=HumanDelay.get_typing_delay('content'))
+                        await self.page.keyboard.type(
+                            line, delay=HumanDelay.get_typing_delay("content")
+                        )
                 if i < len(lines) - 1:
-                    await self.page.keyboard.press('Enter')
+                    await self.page.keyboard.press("Enter")
                 await HumanDelay.random_wait(0.05, 0.1)
 
             # 문단 사이 줄바꿈
-            await self.page.keyboard.press('Enter')
-            await self.page.keyboard.press('Enter')
+            await self.page.keyboard.press("Enter")
+            await self.page.keyboard.press("Enter")
             await asyncio.sleep(0.2)
 
             # 이 문단 뒤에 이미지 삽입할 차례인지 확인
@@ -1369,7 +1710,9 @@ class NaverBlogPoster:
             image_idx += 1
 
         if markdown_count > 0:
-            logger.success(f"✅ 본문 + 이미지 {len(images)}개 삽입 완료 (마크다운 서식 {markdown_count}개 적용)")
+            logger.success(
+                f"✅ 본문 + 이미지 {len(images)}개 삽입 완료 (마크다운 서식 {markdown_count}개 적용)"
+            )
         else:
             logger.success(f"✅ 본문 + 이미지 {len(images)}개 삽입 완료")
 
@@ -1379,7 +1722,7 @@ class NaverBlogPoster:
             logger.debug("🔧 서식 해제 시작...")
 
             # Escape 키로 선택 해제
-            await self.page.keyboard.press('Escape')
+            await self.page.keyboard.press("Escape")
             await asyncio.sleep(0.1)
 
             # 핵심 방법: _force_click_strikethrough_off 호출
@@ -1400,7 +1743,7 @@ class NaverBlogPoster:
             # <button class="se-strikethrough-toolbar-button se-property-toolbar-toggle-button __se-sentry"
             #         data-name="strikethrough" data-type="toggle" ...>
             # ═══════════════════════════════════════════════════════════════
-            exact_result = await self.page.evaluate('''
+            exact_result = await self.page.evaluate("""
                 () => {
                     // 정확한 셀렉터 우선순위:
                     // 1. 클래스명으로 직접 찾기 (가장 확실)
@@ -1441,22 +1784,24 @@ class NaverBlogPoster:
 
                     return { found: true, wasActive: false, clicked: false, selector: usedSelector };
                 }
-            ''')
+            """)
 
-            if exact_result.get('clicked'):
-                logger.info(f"✅ 취소선 버튼 해제 완료 (셀렉터: {exact_result.get('selector')})")
+            if exact_result.get("clicked"):
+                logger.info(
+                    f"✅ 취소선 버튼 해제 완료 (셀렉터: {exact_result.get('selector')})"
+                )
                 await asyncio.sleep(0.3)
                 # 정확한 셀렉터로 성공하면 바로 DOM 정리 후 반환
                 await self._remove_strikethrough_from_dom()
                 return
 
-            if exact_result.get('found') and not exact_result.get('wasActive'):
+            if exact_result.get("found") and not exact_result.get("wasActive"):
                 logger.debug("취소선 버튼 발견됨 (비활성 상태)")
 
             # ═══════════════════════════════════════════════════════════════
             # 방법 1 (폴백): 초록색 SVG 감지로 활성화된 서식 버튼 찾기
             # ═══════════════════════════════════════════════════════════════
-            btn_result = await self.page.evaluate('''
+            btn_result = await self.page.evaluate("""
                 () => {
                     const toolbar = document.querySelector('.se-toolbar');
                     if (!toolbar) return { error: '툴바 없음' };
@@ -1487,16 +1832,18 @@ class NaverBlogPoster:
 
                     return { clicked: clicked };
                 }
-            ''')
+            """)
 
-            if btn_result.get('clicked'):
-                logger.info(f"✅ 취소선 버튼 해제 완료 (index={btn_result.get('index')})")
+            if btn_result.get("clicked"):
+                logger.info(
+                    f"✅ 취소선 버튼 해제 완료 (index={btn_result.get('index')})"
+                )
                 await asyncio.sleep(0.3)
 
             # ═══════════════════════════════════════════════════════════════
             # 방법 2: execCommand로 추가 해제 시도
             # ═══════════════════════════════════════════════════════════════
-            exec_result = await self.page.evaluate('''
+            exec_result = await self.page.evaluate("""
                 () => {
                     try {
                         const isStrikeActive = document.queryCommandState('strikeThrough');
@@ -1509,9 +1856,9 @@ class NaverBlogPoster:
                         return { error: e.message };
                     }
                 }
-            ''')
+            """)
 
-            if exec_result.get('wasActive'):
+            if exec_result.get("wasActive"):
                 logger.info("✅ execCommand로 취소선 추가 해제")
                 await asyncio.sleep(0.2)
 
@@ -1526,7 +1873,7 @@ class NaverBlogPoster:
     async def _remove_strikethrough_from_dom(self):
         """DOM에서 취소선 태그와 스타일을 직접 제거"""
         try:
-            removed = await self.page.evaluate('''
+            removed = await self.page.evaluate("""
                 () => {
                     let removedCount = 0;
 
@@ -1572,9 +1919,9 @@ class NaverBlogPoster:
 
                     return { removed: removedCount };
                 }
-            ''')
+            """)
 
-            if removed.get('removed', 0) > 0:
+            if removed.get("removed", 0) > 0:
                 logger.info(f"✅ DOM에서 취소선 {removed['removed']}개 제거")
 
         except Exception as e:
@@ -1599,7 +1946,9 @@ class NaverBlogPoster:
             set theFile to POSIX file "{abs_path}"
             set the clipboard to (read theFile as «class PNGf»)
             '''
-            result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+            result = subprocess.run(
+                ["osascript", "-e", script], capture_output=True, text=True
+            )
 
             if result.returncode != 0:
                 # JPEG로 재시도
@@ -1607,7 +1956,9 @@ class NaverBlogPoster:
                 set theFile to POSIX file "{abs_path}"
                 set the clipboard to (read theFile as JPEG picture)
                 '''
-                result = subprocess.run(['osascript', '-e', script_jpeg], capture_output=True, text=True)
+                result = subprocess.run(
+                    ["osascript", "-e", script_jpeg], capture_output=True, text=True
+                )
 
             if result.returncode != 0:
                 logger.warning(f"클립보드 복사 실패: {result.stderr}")
@@ -1616,7 +1967,7 @@ class NaverBlogPoster:
             logger.info("✅ 클립보드에 이미지 복사 완료")
 
             # Cmd+V로 이미지 붙여넣기
-            await self.page.keyboard.press('Meta+KeyV')
+            await self.page.keyboard.press("Meta+KeyV")
             logger.info("Cmd+V로 이미지 붙여넣기 실행")
 
             # 이미지 업로드 완료 대기
@@ -1627,15 +1978,15 @@ class NaverBlogPoster:
             # 다음 컴포넌트로 이동해야 함
 
             # 1. ArrowDown으로 이미지 아래로 이동
-            await self.page.keyboard.press('ArrowDown')
+            await self.page.keyboard.press("ArrowDown")
             await asyncio.sleep(0.2)
 
             # 2. End 키로 줄 끝으로 이동 (혹시 텍스트가 있을 경우)
-            await self.page.keyboard.press('End')
+            await self.page.keyboard.press("End")
             await asyncio.sleep(0.1)
 
             # 3. 줄바꿈 추가
-            await self.page.keyboard.press('Enter')
+            await self.page.keyboard.press("Enter")
             await asyncio.sleep(0.2)
 
             logger.success("📷 이미지 삽입 및 커서 이동 완료")
@@ -1649,11 +2000,11 @@ class NaverBlogPoster:
         """커서를 에디터 맨 끝으로 이동"""
         try:
             # Cmd+End (Mac) 또는 Ctrl+End (Windows)로 문서 끝으로 이동
-            await self.page.keyboard.press('Meta+ArrowDown')
+            await self.page.keyboard.press("Meta+ArrowDown")
             await asyncio.sleep(0.1)
 
             # JavaScript로도 커서를 끝으로 이동
-            await self.page.evaluate('''
+            await self.page.evaluate("""
                 () => {
                     const editor = document.querySelector('.se-component-content[contenteditable="true"]') ||
                                    document.querySelector('[contenteditable="true"]');
@@ -1670,14 +2021,16 @@ class NaverBlogPoster:
                         sel.addRange(range);
                     }
                 }
-            ''')
+            """)
             logger.debug("커서를 문서 끝으로 이동")
         except Exception as e:
             logger.debug(f"커서 이동 실패 (무시): {e}")
 
+
 # ============================================
 # 실행
 # ============================================
+
 
 async def main():
     """테스트 실행"""

@@ -54,19 +54,19 @@ class AutoPostingScheduler:
 
     # 템플릿 가중치 (더 자주 사용할 템플릿에 높은 가중치)
     TEMPLATE_WEIGHTS = {
-        "trading_mistake": 3,   # 매매 실수 - 인기 높음
-        "market_analysis": 2,   # 시장 분석
-        "investment_tip": 3,    # 투자 팁 - 인기 높음
-        "psychology": 2         # 투자 심리
+        "trading_mistake": 3,  # 매매 실수 - 인기 높음
+        "market_analysis": 2,  # 시장 분석
+        "investment_tip": 3,  # 투자 팁 - 인기 높음
+        "psychology": 2,  # 투자 심리
     }
 
     # 활동 시간대 (한국 시간 기준)
     ACTIVE_HOURS = {
-        "morning": (7, 9),      # 아침: 7시-9시
-        "lunch": (11, 13),      # 점심: 11시-13시
+        "morning": (7, 9),  # 아침: 7시-9시
+        "lunch": (11, 13),  # 점심: 11시-13시
         "afternoon": (14, 17),  # 오후: 14시-17시
-        "evening": (19, 22),    # 저녁: 19시-22시
-        "night": (22, 24),      # 밤: 22시-24시
+        "evening": (19, 22),  # 저녁: 19시-22시
+        "night": (22, 24),  # 밤: 22시-24시
     }
 
     def __init__(
@@ -77,7 +77,7 @@ class AutoPostingScheduler:
         daily_limit: int = 12,
         model: str = "haiku",
         telegram_enabled: bool = True,
-        multi_account: bool = False
+        multi_account: bool = False,
     ):
         """
         Args:
@@ -131,7 +131,7 @@ class AutoPostingScheduler:
             rotation="1 day",
             retention="30 days",
             level="INFO",
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
         )
 
     def _get_random_interval(self) -> float:
@@ -164,13 +164,17 @@ class AutoPostingScheduler:
 
         # 일일 제한 확인
         if self.posts_today >= self.daily_limit:
-            logger.warning(f"일일 포스팅 제한 도달: {self.posts_today}/{self.daily_limit}")
+            logger.warning(
+                f"일일 포스팅 제한 도달: {self.posts_today}/{self.daily_limit}"
+            )
             return False
 
-        # 활동 시간대 확인 (선택적)
-        if not self._is_active_hour():
-            logger.info("현재 비활동 시간대 - 포스팅 스킵")
-            return False
+        # ★ 24시간 운영: 활동 시간대 체크 비활성화
+        # 원격 서버에서는 24시간 무인 운영되므로 시간대 제한 없이 포스팅
+        # (필요시 아래 주석 해제하여 시간대 제한 적용 가능)
+        # if not self._is_active_hour():
+        #     logger.info("현재 비활동 시간대 - 포스팅 스킵")
+        #     return False
 
         return True
 
@@ -179,7 +183,9 @@ class AutoPostingScheduler:
         job_start = datetime.now()
         current_naver_id = self.naver_id
         logger.info("=" * 50)
-        logger.info(f"📝 자동 포스팅 작업 시작 ({job_start.strftime('%Y-%m-%d %H:%M:%S')})")
+        logger.info(
+            f"📝 자동 포스팅 작업 시작 ({job_start.strftime('%Y-%m-%d %H:%M:%S')})"
+        )
 
         # 포스팅 가능 여부 확인
         if not self._should_post():
@@ -199,13 +205,14 @@ class AutoPostingScheduler:
             # 파이프라인 초기화 (lazy)
             if not self.pipeline or self.pipeline.naver_id != current_naver_id:
                 self.pipeline = BlogPostPipeline(
-                    naver_id=current_naver_id,
-                    model=self.model
+                    naver_id=current_naver_id, model=self.model
                 )
 
             # TopicRotator를 사용한 카테고리 선택
             category = self.topic_rotator.get_next_category()
-            logger.info(f"   카테고리: {category} ({self.topic_rotator.CATEGORY_NAMES.get(category)})")
+            logger.info(
+                f"   카테고리: {category} ({self.topic_rotator.CATEGORY_NAMES.get(category)})"
+            )
 
             # 랜덤 템플릿/키워드 선택
             template_type = self._get_weighted_template()
@@ -221,14 +228,18 @@ class AutoPostingScheduler:
                         logger.warning(f"중복 주제 감지: {keyword} - 다른 키워드 선택")
                         # 다른 키워드 선택 시도
                         available_keywords = [k for k in keywords if k != keyword]
-                        keyword = random.choice(available_keywords) if available_keywords else keyword
+                        keyword = (
+                            random.choice(available_keywords)
+                            if available_keywords
+                            else keyword
+                        )
 
             # 마케팅 콘텐츠 발행
             result = await self.pipeline.run_marketing(
                 template_type=template_type,
                 keyword=keyword,
                 generate_image=True,
-                dry_run=False
+                dry_run=False,
             )
 
             # 결과 처리
@@ -252,7 +263,7 @@ class AutoPostingScheduler:
                 await self._send_telegram_notification(
                     success=True,
                     title=result.get("title", ""),
-                    url=result.get("url", "")
+                    url=result.get("url", ""),
                 )
             else:
                 self.errors_count += 1
@@ -267,10 +278,7 @@ class AutoPostingScheduler:
                 if self.multi_account and self.account_manager:
                     self.account_manager.record_post_failure(current_naver_id)
 
-                await self._send_telegram_notification(
-                    success=False,
-                    error=error_msg
-                )
+                await self._send_telegram_notification(success=False, error=error_msg)
 
         except Exception as e:
             self.errors_count += 1
@@ -284,10 +292,7 @@ class AutoPostingScheduler:
             if self.multi_account and self.account_manager:
                 self.account_manager.record_post_failure(current_naver_id)
 
-            await self._send_telegram_notification(
-                success=False,
-                error=str(e)
-            )
+            await self._send_telegram_notification(success=False, error=str(e))
 
         finally:
             # 다음 포스팅 스케줄링
@@ -302,7 +307,9 @@ class AutoPostingScheduler:
         interval_hours = self._get_random_interval()
         next_time = datetime.now() + timedelta(hours=interval_hours)
 
-        logger.info(f"⏰ 다음 포스팅 예정: {next_time.strftime('%H:%M:%S')} ({interval_hours:.1f}시간 후)")
+        logger.info(
+            f"⏰ 다음 포스팅 예정: {next_time.strftime('%H:%M:%S')} ({interval_hours:.1f}시간 후)"
+        )
 
         # 기존 일회성 작업 제거 후 새로 스케줄
         try:
@@ -315,15 +322,11 @@ class AutoPostingScheduler:
             trigger="date",
             run_date=next_time,
             id="next_post",
-            replace_existing=True
+            replace_existing=True,
         )
 
     async def _send_telegram_notification(
-        self,
-        success: bool,
-        title: str = "",
-        url: str = "",
-        error: str = ""
+        self, success: bool, title: str = "", url: str = "", error: str = ""
     ):
         """텔레그램 알림 전송"""
         if not self.telegram_enabled:
@@ -428,20 +431,17 @@ class AutoPostingScheduler:
                 if not session_manager.is_session_valid(session_name, max_age_days=7):
                     # 만료됨
                     await notifier.send_session_warning(
-                        account_id=session_name,
-                        days_until_expiry=0
+                        account_id=session_name, days_until_expiry=0
                     )
                 elif not session_manager.is_session_valid(session_name, max_age_days=5):
                     # 2일 이내 만료
                     await notifier.send_session_warning(
-                        account_id=session_name,
-                        days_until_expiry=2
+                        account_id=session_name, days_until_expiry=2
                     )
                 elif not session_manager.is_session_valid(session_name, max_age_days=4):
                     # 3일 이내 만료
                     await notifier.send_session_warning(
-                        account_id=session_name,
-                        days_until_expiry=3
+                        account_id=session_name, days_until_expiry=3
                     )
 
         except Exception as e:
@@ -481,7 +481,10 @@ class AutoPostingScheduler:
         else:
             # 논블로킹 모드 - 백그라운드 스레드에서 실행
             import threading
-            thread = threading.Thread(target=lambda: asyncio.run(self._async_main()), daemon=True)
+
+            thread = threading.Thread(
+                target=lambda: asyncio.run(self._async_main()), daemon=True
+            )
             thread.start()
 
     async def _async_main(self):
@@ -494,42 +497,40 @@ class AutoPostingScheduler:
         self.scheduler.add_job(
             self._reset_daily_counter,
             trigger=CronTrigger(hour=0, minute=0),
-            id="daily_reset"
+            id="daily_reset",
         )
 
         # 정기 헬스체크 (1시간마다)
         self.scheduler.add_job(
-            self._run_health_check,
-            trigger=IntervalTrigger(hours=1),
-            id="health_check"
+            self._run_health_check, trigger=IntervalTrigger(hours=1), id="health_check"
         )
 
         # 빠른 리소스 체크 (15분마다 - CPU, 메모리, 디스크만)
         self.scheduler.add_job(
             self._run_quick_resource_check,
             trigger=IntervalTrigger(minutes=15),
-            id="quick_resource_check"
+            id="quick_resource_check",
         )
 
         # 세션 상태 체크 (3시간마다)
         self.scheduler.add_job(
             self._check_session_status,
             trigger=IntervalTrigger(hours=3),
-            id="session_check"
+            id="session_check",
         )
 
         # 일간 리포트 (매일 저녁 9시)
         self.scheduler.add_job(
             self._send_daily_report,
             trigger=CronTrigger(hour=21, minute=0),
-            id="daily_report"
+            id="daily_report",
         )
 
         # 주간 리포트 (매주 일요일 저녁 8시)
         self.scheduler.add_job(
             self._send_weekly_report,
-            trigger=CronTrigger(day_of_week='sun', hour=20, minute=0),
-            id="weekly_report"
+            trigger=CronTrigger(day_of_week="sun", hour=20, minute=0),
+            id="weekly_report",
         )
 
         # 첫 포스팅 즉시 스케줄
@@ -549,7 +550,9 @@ class AutoPostingScheduler:
         # 시그널 핸들러 등록
         loop = asyncio.get_event_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self._async_shutdown(s)))
+            loop.add_signal_handler(
+                sig, lambda s=sig: asyncio.create_task(self._async_shutdown(s))
+            )
 
         # 무한 대기 (스케줄러가 백그라운드에서 실행됨)
         try:
@@ -573,7 +576,7 @@ class AutoPostingScheduler:
         uptime_str = "알 수 없음"
         if self.start_time:
             uptime = datetime.now() - self.start_time
-            uptime_str = str(uptime).split('.')[0]
+            uptime_str = str(uptime).split(".")[0]
             logger.info(f"   가동 시간: {uptime_str}")
             logger.info(f"   총 포스팅: {self.total_posts}개")
             logger.info(f"   오류 횟수: {self.errors_count}")
@@ -616,14 +619,16 @@ class AutoPostingScheduler:
             # 헬스체크 결과 요약
             health_report = self.health_checker.get_status_report()
             overall = health_report.get("overall_status", "unknown")
-            status_emoji = "✅" if overall == "healthy" else "⚠️" if overall == "warning" else "❌"
+            status_emoji = (
+                "✅" if overall == "healthy" else "⚠️" if overall == "warning" else "❌"
+            )
             message += f"\n{status_emoji} 헬스체크: {overall.upper()}"
 
             await notifier.send_alert(
                 title="🚀 블로그 봇 시작",
                 message=message,
                 level=AlertLevel.SUCCESS,
-                alert_key="startup"
+                alert_key="startup",
             )
 
             logger.info("시작 알림 전송 완료")
@@ -656,7 +661,7 @@ class AutoPostingScheduler:
                 title="⏹ 블로그 봇 종료",
                 message=message,
                 level=AlertLevel.INFO,
-                alert_key="shutdown"
+                alert_key="shutdown",
             )
 
         except Exception as e:
@@ -669,11 +674,13 @@ class AutoPostingScheduler:
             "posts_today": self.posts_today,
             "total_posts": self.total_posts,
             "errors_count": self.errors_count,
-            "last_post_time": self.last_post_time.isoformat() if self.last_post_time else None,
+            "last_post_time": self.last_post_time.isoformat()
+            if self.last_post_time
+            else None,
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "daily_limit": self.daily_limit,
             "multi_account": self.multi_account,
-            "error_recovery": self.error_recovery.get_status()
+            "error_recovery": self.error_recovery.get_status(),
         }
 
         # 다중 계정 모드 상태
@@ -690,6 +697,7 @@ class AutoPostingScheduler:
 # CLI 진입점
 # ============================================
 
+
 def main():
     """CLI 메인 함수"""
     import argparse
@@ -703,14 +711,10 @@ def main():
   python -m scheduler.auto_scheduler --interval 1 2    # 1-2시간 간격
   python -m scheduler.auto_scheduler --limit 10        # 일일 10개 제한
   python -m scheduler.auto_scheduler --test            # 테스트 모드 (1회 실행)
-        """
+        """,
     )
 
-    parser.add_argument(
-        "--naver-id",
-        default="wncksdid0750",
-        help="네이버 계정 ID"
-    )
+    parser.add_argument("--naver-id", default="wncksdid0750", help="네이버 계정 ID")
 
     parser.add_argument(
         "--interval",
@@ -718,39 +722,32 @@ def main():
         nargs=2,
         default=[1.0, 2.0],
         metavar=("MIN", "MAX"),
-        help="포스팅 간격 (시간), 기본값: 1-2시간"
+        help="포스팅 간격 (시간), 기본값: 1-2시간",
     )
 
     parser.add_argument(
-        "--limit",
-        type=int,
-        default=12,
-        help="일일 최대 포스팅 수, 기본값: 12"
+        "--limit", type=int, default=12, help="일일 최대 포스팅 수, 기본값: 12"
     )
 
     parser.add_argument(
         "--model",
         choices=["haiku", "sonnet"],
         default="haiku",
-        help="글쓰기 모델, 기본값: haiku"
+        help="글쓰기 모델, 기본값: haiku",
     )
 
     parser.add_argument(
-        "--no-telegram",
-        action="store_true",
-        help="텔레그램 알림 비활성화"
+        "--no-telegram", action="store_true", help="텔레그램 알림 비활성화"
     )
 
     parser.add_argument(
-        "--test",
-        action="store_true",
-        help="테스트 모드 (1회 포스팅 후 종료)"
+        "--test", action="store_true", help="테스트 모드 (1회 포스팅 후 종료)"
     )
 
     parser.add_argument(
         "--multi-account",
         action="store_true",
-        help="다중 계정 모드 활성화 (NAVER_ACCOUNTS 환경변수 필요)"
+        help="다중 계정 모드 활성화 (NAVER_ACCOUNTS 환경변수 필요)",
     )
 
     args = parser.parse_args()
@@ -763,7 +760,7 @@ def main():
         daily_limit=args.limit,
         model=args.model,
         telegram_enabled=not args.no_telegram,
-        multi_account=args.multi_account
+        multi_account=args.multi_account,
     )
 
     if args.test:
