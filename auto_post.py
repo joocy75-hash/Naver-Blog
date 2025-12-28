@@ -243,21 +243,105 @@ class NaverBlogPoster:
         await self._wait_for_editor()
 
         # ★ 중요: 팝업은 에디터 로드 후에 나타남 - 여기서 처리
-        await asyncio.sleep(2)  # 팝업이 나타날 시간 확보 (증가)
-        await self._handle_popups()
+        await asyncio.sleep(2)  # 팝업이 나타날 시간 확보
 
-        # ★ 추가 대기 후 한 번 더 팝업 체크 (팝업이 늦게 나타나는 경우 대비)
-        await asyncio.sleep(1)
-        await self._handle_popups()
+        # 팝업이 있는지 확인
+        has_popup = await self._check_and_handle_popup()
 
-        # ★★★ 핵심: 팝업 처리 후 에디터 재활성화를 위해 충분한 대기 (3초)
-        logger.info("팝업 처리 완료, 에디터 재활성화 대기 중...")
-        await asyncio.sleep(3)
+        if has_popup:
+            # ★★★ 핵심 수정: 팝업 처리 후 페이지 새로고침
+            # "취소" 클릭 후 에디터가 리셋되므로, 새로고침해서 깨끗한 상태로 시작
+            logger.info("팝업 처리 후 페이지 새로고침...")
+            await asyncio.sleep(1)
+            await self.page.reload(wait_until="domcontentloaded")
+            await asyncio.sleep(3)
+
+            # 새로고침 후 다시 팝업 확인 (보통 없음)
+            await self._check_and_handle_popup()
+            await asyncio.sleep(2)
 
         # ★ 에디터 상태 확인 및 강제 활성화
         await self._ensure_editor_active()
 
+        # 제목 영역이 정상적으로 렌더링되었는지 확인
+        is_ready = await self._verify_editor_ready()
+        if not is_ready:
+            logger.warning("에디터가 준비되지 않음, 재시도...")
+            await self.page.reload(wait_until="domcontentloaded")
+            await asyncio.sleep(3)
+            await self._ensure_editor_active()
+
         logger.success("글쓰기 페이지 준비 완료")
+
+    async def _check_and_handle_popup(self) -> bool:
+        """팝업 확인 및 처리, 팝업이 있었으면 True 반환"""
+        try:
+            result = await self.page.evaluate("""
+                () => {
+                    // 취소 버튼 찾기
+                    const cancelBtn = document.querySelector('.se-popup-button-cancel') ||
+                        Array.from(document.querySelectorAll('button')).find(b => 
+                            b.textContent && b.textContent.includes('취소')
+                        );
+                    
+                    if (cancelBtn && cancelBtn.offsetParent !== null) {
+                        cancelBtn.click();
+                        return { found: true, action: 'cancel_clicked' };
+                    }
+                    
+                    // 오버레이만 있는 경우 숨김
+                    const overlay = document.querySelector('.se-popup-dim, .se-popup-dim-white');
+                    if (overlay && overlay.offsetParent !== null) {
+                        overlay.style.display = 'none';
+                        return { found: true, action: 'overlay_hidden' };
+                    }
+                    
+                    return { found: false };
+                }
+            """)
+
+            if result.get("found"):
+                logger.info(f"팝업 처리됨: {result.get('action')}")
+                return True
+            else:
+                logger.info("팝업 없음")
+                return False
+
+        except Exception as e:
+            logger.debug(f"팝업 확인 중 오류: {e}")
+            return False
+
+    async def _verify_editor_ready(self) -> bool:
+        """에디터가 정상적으로 렌더링되었는지 확인"""
+        try:
+            result = await self.page.evaluate("""
+                () => {
+                    const titleP = document.querySelector('.se-section-documentTitle p');
+                    if (!titleP) return { ready: false, reason: 'no_element' };
+                    
+                    const rect = titleP.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) {
+                        return { ready: false, reason: 'zero_size', rect: rect };
+                    }
+                    
+                    if (titleP.offsetParent === null) {
+                        return { ready: false, reason: 'no_offset_parent' };
+                    }
+                    
+                    return { ready: true, rect: { w: rect.width, h: rect.height } };
+                }
+            """)
+
+            if result.get("ready"):
+                logger.info(f"에디터 준비 완료: {result.get('rect')}")
+                return True
+            else:
+                logger.warning(f"에디터 준비 안됨: {result.get('reason')}")
+                return False
+
+        except Exception as e:
+            logger.warning(f"에디터 확인 중 오류: {e}")
+            return False
 
     async def _handle_popups(self):
         """팝업창 처리 - JavaScript 직접 조작 방식 (가장 안정적)"""
@@ -520,146 +604,111 @@ class NaverBlogPoster:
 
     async def input_title(self, title: str):
         """
-        제목 입력 - 4단계 폴백 전략
+        제목 입력 - JavaScript 직접 설정 방식 (가장 안정적)
 
-        1) bounding_box 좌표 클릭 (offsetParent=null이어도 작동)
-        2) JavaScript dispatchEvent로 실제 이벤트 발생
-        3) Playwright locator 클릭
-        4) Tab 키로 이동
+        키보드 타이핑 대신 JavaScript로 innerHTML/innerText를 직접 설정합니다.
+        이 방법은 포커스 문제를 완전히 우회합니다.
         """
         logger.info(f"제목 입력 중: {title[:30]}...")
 
-        # ★★★ 방법 1: bounding_box 좌표 클릭 (가장 안정적 - offsetParent와 무관) ★★★
+        # ★★★ 방법 1: JavaScript로 직접 텍스트 설정 (가장 확실) ★★★
         try:
-            title_section = await self.page.query_selector(".se-section-documentTitle")
-            if title_section:
-                box = await title_section.bounding_box()
-                if box and box["width"] > 0 and box["height"] > 0:
-                    # 제목 영역 중앙 클릭
-                    click_x = box["x"] + box["width"] / 2
-                    click_y = box["y"] + box["height"] / 2
-
-                    logger.info(f"제목 영역 좌표 클릭: ({click_x:.0f}, {click_y:.0f})")
-                    await self.page.mouse.click(click_x, click_y)
-                    await asyncio.sleep(0.5)
-
-                    # 포커스 확인
-                    focused = await self.page.evaluate("""
-                        () => {
-                            const active = document.activeElement;
-                            const titleSection = document.querySelector('.se-section-documentTitle');
-                            return titleSection && titleSection.contains(active);
-                        }
-                    """)
-
-                    if focused:
-                        logger.info("✅ 제목 영역 포커스 성공 (bounding_box)")
-                        await self._type_title(title)
-                        return
-                    else:
-                        logger.debug("bounding_box 클릭 후 포커스 확인 실패")
-        except Exception as e:
-            logger.debug(f"bounding_box 클릭 실패: {e}")
-
-        # ★★★ 방법 2: JavaScript dispatchEvent로 실제 이벤트 발생 ★★★
-        try:
-            click_result = await self.page.evaluate("""
-                () => {
+            result = await self.page.evaluate(f"""
+                () => {{
                     const selectors = [
                         '.se-section-documentTitle p',
                         '.se-section-documentTitle .se-text-paragraph',
-                        '.se-documentTitle p',
-                        '.se-section-documentTitle'
+                        '.se-documentTitle p'
                     ];
                     
-                    for (const sel of selectors) {
+                    for (const sel of selectors) {{
                         const el = document.querySelector(sel);
                         if (!el) continue;
                         
-                        // 부모 체인 강제 표시
-                        let current = el;
-                        while (current && current !== document.body) {
-                            current.style.display = '';
-                            current.style.visibility = 'visible';
-                            current.style.pointerEvents = 'auto';
-                            current = current.parentElement;
-                        }
+                        // 기존 내용 삭제
+                        el.innerHTML = '';
                         
-                        // 실제 마우스 이벤트와 동일한 이벤트 시퀀스
-                        const rect = el.getBoundingClientRect();
-                        const centerX = rect.left + rect.width / 2;
-                        const centerY = rect.top + rect.height / 2;
+                        // 텍스트 노드 추가 (XSS 방지를 위해 textContent 사용)
+                        el.textContent = `{title}`;
                         
-                        ['mousedown', 'mouseup', 'click'].forEach(eventType => {
-                            el.dispatchEvent(new MouseEvent(eventType, {
-                                view: window,
-                                bubbles: true,
-                                cancelable: true,
-                                clientX: centerX,
-                                clientY: centerY
-                            }));
-                        });
+                        // 에디터가 변경을 감지하도록 이벤트 발생
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
                         
-                        // 포커스 이벤트
-                        el.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
-                        el.focus();
+                        // 포커스 이동 (입력이 완료되었음을 알림)
+                        el.blur();
                         
-                        return { success: true, selector: sel };
-                    }
-                    return { success: false };
-                }
+                        return {{ success: true, selector: sel, text: el.textContent }};
+                    }}
+                    return {{ success: false, error: 'no element found' }};
+                }}
             """)
 
-            if click_result.get("success"):
-                logger.info(f"제목 영역 dispatchEvent: {click_result.get('selector')}")
-                await asyncio.sleep(0.5)
-                await self._type_title(title)
-                return
+            if result.get("success"):
+                logger.success(
+                    f"✅ 제목 입력 완료 (JS 직접 설정): {result.get('text')[:30]}..."
+                )
+
+                # 입력 확인
+                verify = await self.page.evaluate("""
+                    () => {
+                        const el = document.querySelector('.se-section-documentTitle p');
+                        return el ? el.textContent : '';
+                    }
+                """)
+
+                if verify and len(verify.strip()) > 0:
+                    logger.info(f"제목 확인: {verify[:30]}...")
+                    return
+                else:
+                    logger.warning("제목 설정 후 확인 실패, 폴백 방식 시도")
+            else:
+                logger.warning(f"JS 직접 설정 실패: {result.get('error')}")
+
         except Exception as e:
-            logger.debug(f"dispatchEvent 실패: {e}")
+            logger.warning(f"JS 직접 설정 중 오류: {e}")
 
-        # ★★★ 방법 3: Playwright locator 강제 클릭 ★★★
-        title_selectors = [
-            ".se-section-documentTitle p",
-            ".se-section-documentTitle .se-text-paragraph",
-            ".se-documentTitle p",
-            ".se-section-documentTitle",
-        ]
+        # ★★★ 방법 2: 클릭 후 키보드 타이핑 (폴백) ★★★
+        logger.info("폴백: 클릭 후 키보드 타이핑 방식 시도")
+        try:
+            # bounding_box 클릭
+            title_section = await self.page.query_selector(".se-section-documentTitle")
+            if title_section:
+                box = await title_section.bounding_box()
+                if box and box["width"] > 0:
+                    click_x = box["x"] + box["width"] / 2
+                    click_y = box["y"] + box["height"] / 2
+                    await self.page.mouse.click(click_x, click_y)
+                    await asyncio.sleep(0.5)
 
-        for selector in title_selectors:
-            try:
-                title_el = self.page.locator(selector).first
-                # force=True: 요소가 가려져 있어도 강제 클릭
-                await title_el.click(force=True, timeout=3000)
-                logger.info(f"제목 영역 강제 클릭: {selector}")
-                await asyncio.sleep(0.3)
-                await self._type_title(title)
-                return
-            except Exception as e:
-                logger.debug(f"Playwright 클릭 실패 {selector}: {e}")
-                continue
+                    # 기존 내용 삭제 후 타이핑
+                    await self.page.keyboard.press("Meta+A")
+                    await asyncio.sleep(0.1)
+                    await self.page.keyboard.press("Backspace")
+                    await asyncio.sleep(0.2)
+                    await self.page.keyboard.type(
+                        title, delay=HumanDelay.get_typing_delay("title")
+                    )
 
-        # ★★★ 방법 4: 최후의 수단 - Tab 키 이동 ★★★
-        logger.warning("제목 입력란을 찾지 못함, Tab 키로 이동 시도")
+                    logger.success("✅ 제목 입력 완료 (폴백 방식)")
+                    return
+        except Exception as e:
+            logger.warning(f"폴백 방식 실패: {e}")
 
-        # 페이지 시작 부분으로 이동 후 Tab
-        await self.page.keyboard.press("Home")
-        await asyncio.sleep(0.2)
-        await self.page.keyboard.press("Tab")
-        await asyncio.sleep(0.3)
-        await self._type_title(title)
-
-    async def _type_title(self, title: str):
-        """제목 텍스트 입력 (공통 로직)"""
-        # 기존 내용 삭제
-        await self.page.keyboard.press("Meta+A")
-        await asyncio.sleep(0.1)
-        await self.page.keyboard.press("Backspace")
-        await asyncio.sleep(0.2)
-
-        # 제목 타이핑
-        await self.page.keyboard.type(title, delay=HumanDelay.get_typing_delay("title"))
-        logger.success("✅ 제목 입력 완료")
+        # ★★★ 방법 3: force click ★★★
+        try:
+            title_el = self.page.locator(".se-section-documentTitle p").first
+            await title_el.click(force=True, timeout=3000)
+            await asyncio.sleep(0.3)
+            await self.page.keyboard.press("Meta+A")
+            await self.page.keyboard.press("Backspace")
+            await self.page.keyboard.type(
+                title, delay=HumanDelay.get_typing_delay("title")
+            )
+            logger.success("✅ 제목 입력 완료 (force click)")
+        except Exception as e:
+            logger.error(f"모든 제목 입력 방식 실패: {e}")
 
     async def _clear_text_formatting(self):
         """텍스트 서식 완전 초기화 (취소선, 굵게, 기울임 등 모두 해제)"""
@@ -1297,23 +1346,58 @@ class NaverBlogPoster:
         # 2단계: 발행 설정 팝업에서 최종 발행 버튼 클릭
         await self._handle_publish_popup()
 
-        # 발행 완료 대기 (URL 변경 감지)
-        logger.info("발행 완료 대기 중...")
-        for _ in range(10):  # 최대 10초 대기
+        # ★★★ 발행 완료 대기 - 더 긴 대기 시간 및 검증 로직 강화 ★★★
+        logger.info("발행 완료 대기 중... (최대 30초)")
+
+        published_url = None
+
+        # 1단계: URL 변경 감지 (최대 15초)
+        for i in range(15):
             await asyncio.sleep(1)
             current_url = self.page.url
-            # postwrite가 아닌 다른 URL로 이동하면 발행 완료
-            if "postwrite" not in current_url.lower():
-                logger.success(f"✅ 포스트 발행 완료: {current_url}")
-                return current_url
+            logger.debug(f"발행 대기 {i+1}초: {current_url[:50]}...")
 
-        # URL이 변경되지 않았으면 블로그로 이동하여 최신 글 확인
-        logger.info("블로그에서 최신 글 확인 중...")
+            # postwrite가 아닌 다른 URL로 이동하면 발행 완료 가능성
+            if "postwrite" not in current_url.lower():
+                # PostView URL인 경우 성공
+                if "PostView" in current_url or "logNo=" in current_url:
+                    logger.success(f"✅ 포스트 발행 완료 (URL 확인): {current_url}")
+                    published_url = current_url
+                    break
+                else:
+                    logger.info(f"URL 변경 감지: {current_url}")
+                    published_url = current_url
+                    break
+
+        # 2단계: 발행 성공 시 추가 대기 (서버 처리 완료 보장)
+        if published_url:
+            logger.info("서버 처리 완료 대기 중 (5초)...")
+            await asyncio.sleep(5)
+
+        # 3단계: 실제 게시글 존재 여부 확인
+        logger.info("실제 게시글 존재 여부 확인 중...")
+        verified_url = await self._verify_post_published()
+
+        if verified_url:
+            logger.success(f"✅ 포스트 발행 확인 완료: {verified_url}")
+            return verified_url
+
+        # 4단계: URL 변경은 됐지만 확인 실패 시
+        if published_url:
+            logger.warning(f"⚠️ URL은 변경됐으나 게시글 확인 실패. URL: {published_url}")
+            # 임시저장함 확인
+            await self._check_temp_saved_posts()
+            return published_url
+
+        # 5단계: URL 변경 없이 타임아웃 - 발행 실패 가능성 높음
+        logger.error("❌ 발행 실패: URL이 변경되지 않음")
+        await self._check_temp_saved_posts()
+
+        # 최신 글 확인 시도 (마지막 시도)
         try:
             await self.page.goto(f"https://blog.naver.com/{self.naver_id}")
-            await HumanDelay.wait("page_load")
+            await asyncio.sleep(3)
 
-            # 최신 글 링크 찾기
             latest_post = self.page.locator(
                 'a[href*="/PostView.naver"], a[href*="logNo="]'
             ).first
@@ -1321,64 +1405,210 @@ class NaverBlogPoster:
                 post_url = await latest_post.get_attribute("href")
                 if post_url and not post_url.startswith("http"):
                     post_url = f"https://blog.naver.com{post_url}"
-                logger.success(f"✅ 최신 글 발견: {post_url}")
+                logger.info(f"최신 글 발견 (미확인): {post_url}")
                 return post_url
         except Exception as e:
             logger.warning(f"최신 글 확인 실패: {e}")
 
-        # 그래도 없으면 블로그 URL 반환
+        # 발행 실패로 간주
         post_url = f"https://blog.naver.com/{self.naver_id}"
-        logger.success(f"✅ 포스트 발행 완료 (블로그): {post_url}")
+        logger.warning(f"⚠️ 발행 상태 불확실: {post_url}")
         return post_url
 
+    async def _verify_post_published(self) -> str:
+        """
+        실제로 게시글이 발행되었는지 확인
+
+        Returns:
+            발행된 게시글 URL (성공 시) 또는 None (실패 시)
+        """
+        try:
+            # 블로그 메인으로 이동
+            blog_url = f"https://blog.naver.com/{self.naver_id}"
+            await self.page.goto(blog_url, wait_until="networkidle")
+            await asyncio.sleep(3)
+
+            # 최신 글 목록에서 방금 작성한 글 확인
+            # 방법 1: PostView 링크 확인
+            latest_links = await self.page.evaluate("""
+                () => {
+                    const links = document.querySelectorAll('a[href*="PostView"], a[href*="logNo="]');
+                    const results = [];
+                    for (let i = 0; i < Math.min(links.length, 5); i++) {
+                        results.push({
+                            href: links[i].href,
+                            text: links[i].innerText.trim().substring(0, 50)
+                        });
+                    }
+                    return results;
+                }
+            """)
+
+            if latest_links and len(latest_links) > 0:
+                logger.info(f"블로그에서 {len(latest_links)}개의 글 발견")
+                for link in latest_links[:3]:
+                    logger.debug(f"  - {link.get('text', 'N/A')}: {link.get('href', 'N/A')[:50]}")
+
+                # 첫 번째 링크가 최신 글
+                return latest_links[0].get("href")
+
+            # 방법 2: iframe 내 글 목록 확인 (네이버 블로그 구조)
+            iframe_content = await self.page.evaluate("""
+                () => {
+                    const iframe = document.querySelector('iframe#mainFrame');
+                    if (iframe && iframe.contentDocument) {
+                        const links = iframe.contentDocument.querySelectorAll('a[href*="PostView"]');
+                        if (links.length > 0) {
+                            return { found: true, href: links[0].href };
+                        }
+                    }
+                    return { found: false };
+                }
+            """)
+
+            if iframe_content.get("found"):
+                return iframe_content.get("href")
+
+            logger.warning("블로그에서 게시글을 찾을 수 없음")
+            return None
+
+        except Exception as e:
+            logger.warning(f"게시글 확인 중 오류: {e}")
+            return None
+
+    async def _check_temp_saved_posts(self):
+        """임시저장함 확인 (디버깅용)"""
+        try:
+            temp_url = f"https://blog.naver.com/{self.naver_id}/postwrite?Redirect=Write"
+            await self.page.goto(temp_url, wait_until="domcontentloaded")
+            await asyncio.sleep(2)
+
+            # "작성 중인 글이 있습니다" 팝업 확인
+            has_temp = await self.page.evaluate("""
+                () => {
+                    const popup = document.querySelector('.se-popup-content');
+                    if (popup && popup.innerText.includes('작성 중인 글')) {
+                        return { found: true, text: popup.innerText.substring(0, 100) };
+                    }
+                    return { found: false };
+                }
+            """)
+
+            if has_temp.get("found"):
+                logger.warning(f"⚠️ 임시저장된 글 발견: {has_temp.get('text', '')[:50]}")
+            else:
+                logger.info("임시저장함에 글 없음")
+
+        except Exception as e:
+            logger.debug(f"임시저장함 확인 실패: {e}")
+
     async def _handle_publish_popup(self):
-        """발행 설정 팝업 처리 - 인간 행동 패턴 적용"""
+        """
+        발행 설정 팝업 처리 - 강화된 발행 로직
+
+        네이버 블로그 발행 레이어에서:
+        1. 공개 설정 확인 (전체공개)
+        2. 최종 발행 버튼 클릭
+        3. 발행 완료 확인
+        """
         logger.info("발행 설정 레이어 대기 중...")
 
-        # 1단계: 발행 설정 레이어가 나타날 때까지 대기
+        # 1단계: 발행 설정 레이어가 나타날 때까지 대기 (더 긴 대기)
         publish_layer_selectors = [
             '[class*="layer_publish"]',
             '[class*="publish_layer"]',
+            '[class*="PublishLayer"]',
             '[role="dialog"]',
+            '.se-popup',
         ]
 
         layer_found = False
-        for selector in publish_layer_selectors:
-            try:
-                layer = self.page.locator(selector).first
-                await layer.wait_for(state="visible", timeout=3000)
-                logger.info(f"발행 설정 레이어 발견: {selector}")
-                layer_found = True
+        for attempt in range(3):  # 3회 시도
+            for selector in publish_layer_selectors:
+                try:
+                    layer = self.page.locator(selector).first
+                    await layer.wait_for(state="visible", timeout=2000)
+                    logger.info(f"발행 설정 레이어 발견: {selector}")
+                    layer_found = True
+                    break
+                except:
+                    continue
+            if layer_found:
                 break
-            except:
-                continue
+            await asyncio.sleep(1)
 
         if not layer_found:
-            logger.warning("발행 설정 레이어를 명시적으로 찾지 못함 - 계속 진행")
+            logger.warning("발행 설정 레이어를 찾지 못함 - JavaScript로 확인")
+            # JavaScript로 발행 레이어 상태 확인
+            layer_check = await self.page.evaluate("""
+                () => {
+                    const dialogs = document.querySelectorAll('[role="dialog"], [class*="layer"], [class*="popup"]');
+                    for (const d of dialogs) {
+                        if (d.offsetParent !== null && d.innerText.includes('발행')) {
+                            return { found: true, text: d.innerText.substring(0, 100) };
+                        }
+                    }
+                    return { found: false };
+                }
+            """)
+            if layer_check.get("found"):
+                logger.info(f"JS로 발행 레이어 확인: {layer_check.get('text', '')[:50]}")
+                layer_found = True
 
-        # 레이어 애니메이션 완료 + 인간적 인식 시간
-        await HumanDelay.wait("layer_appear")
+        # 레이어 애니메이션 완료 대기
+        await asyncio.sleep(1.5)
 
-        # 2단계: 최종 발행 버튼 찾기
+        # ★★★ 1.5단계: 공개 설정이 '전체공개'인지 확인 ★★★
+        try:
+            await self.page.evaluate("""
+                () => {
+                    // '전체공개' 라디오 버튼 또는 옵션 선택
+                    const publicOptions = document.querySelectorAll(
+                        'input[value="open"], label:has-text("전체공개"), [class*="open"]'
+                    );
+                    for (const opt of publicOptions) {
+                        if (opt.tagName === 'INPUT' && opt.type === 'radio') {
+                            opt.checked = true;
+                            opt.dispatchEvent(new Event('change', { bubbles: true }));
+                        } else if (opt.tagName === 'LABEL' || opt.tagName === 'BUTTON') {
+                            opt.click();
+                        }
+                    }
+                }
+            """)
+            logger.debug("공개 설정 확인됨")
+        except Exception as e:
+            logger.debug(f"공개 설정 확인 실패 (무시): {e}")
+
+        # 2단계: 최종 발행 버튼 찾기 - 더 많은 셀렉터 추가
         final_publish_selectors = [
             'button[class*="confirm_btn"]',
+            'button[class*="confirm"]',
+            'button[class*="publish_btn"]',
             '[class*="layer"] button[class*="confirm"]',
             '[role="dialog"] button:has-text("발행")',
             '[class*="layer"] button:has-text("발행")',
+            '[class*="popup"] button:has-text("발행")',
+            'button.se-popup-button-confirm',
         ]
 
+        clicked = False
         for selector in final_publish_selectors:
             try:
                 btn = self.page.locator(selector).first
                 if await btn.is_visible(timeout=500):
                     await btn.scroll_into_view_if_needed()
-                    await HumanDelay.wait("before_click")
+                    await asyncio.sleep(0.5)
                     await btn.click()
                     logger.info(f"2단계 - 최종 발행 버튼 클릭: {selector}")
-                    await asyncio.sleep(1)
-                    return
+                    clicked = True
+                    await asyncio.sleep(2)  # 발행 처리 대기
+                    break
             except:
                 continue
+
+        if clicked:
+            return
 
         # 폴백: 마지막 보이는 "발행" 버튼
         logger.info("최종 발행 버튼 폴백 검색 중...")
@@ -1392,42 +1622,64 @@ class NaverBlogPoster:
                 if await btn.is_visible():
                     visible_btns.append(btn)
 
+            logger.info(f"보이는 '발행' 버튼: {len(visible_btns)}개")
+
             if len(visible_btns) >= 2:
                 final_btn = visible_btns[-1]
                 await final_btn.scroll_into_view_if_needed()
-                await HumanDelay.wait("before_click")
+                await asyncio.sleep(0.5)
                 await final_btn.click()
-                logger.info("2단계 - 최종 발행 버튼 클릭 (폴백)")
-                await HumanDelay.wait("publish_wait")
+                logger.info("2단계 - 최종 발행 버튼 클릭 (폴백 - 마지막)")
+                await asyncio.sleep(2)
                 return
             elif len(visible_btns) == 1:
-                await HumanDelay.wait("before_click")
+                await asyncio.sleep(0.5)
                 await visible_btns[0].click()
-                logger.info("2단계 - 발행 버튼 재클릭")
-                await HumanDelay.wait("publish_wait")
+                logger.info("2단계 - 발행 버튼 클릭 (유일한 버튼)")
+                await asyncio.sleep(2)
                 return
 
         except Exception as e:
             logger.warning(f"폴백 발행 버튼 검색 실패: {e}")
 
-        # JavaScript로 직접 발행 버튼 클릭 시도
+        # ★★★ 최후의 수단: JavaScript로 모든 발행 버튼 찾아서 클릭 ★★★
+        logger.info("JavaScript로 발행 버튼 강제 클릭 시도...")
         try:
-            await self.page.evaluate("""
-                const buttons = Array.from(document.querySelectorAll('button'));
-                const publishBtns = buttons.filter(btn => {
-                    const text = btn.innerText || btn.textContent;
-                    return text.includes('발행') && btn.offsetParent !== null;
-                });
-                if (publishBtns.length >= 2) {
-                    publishBtns[publishBtns.length - 1].click();
-                } else if (publishBtns.length === 1) {
-                    publishBtns[0].click();
+            result = await self.page.evaluate("""
+                () => {
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    const publishBtns = buttons.filter(btn => {
+                        const text = (btn.innerText || btn.textContent || '').trim();
+                        const isVisible = btn.offsetParent !== null;
+                        const isPublish = text === '발행' || text.includes('발행');
+                        // '예약발행' 등은 제외
+                        const notScheduled = !text.includes('예약');
+                        return isVisible && isPublish && notScheduled;
+                    });
+
+                    console.log('발행 버튼 수:', publishBtns.length);
+
+                    if (publishBtns.length >= 2) {
+                        // 레이어 내의 버튼 (보통 마지막)
+                        publishBtns[publishBtns.length - 1].click();
+                        return { clicked: true, index: publishBtns.length - 1 };
+                    } else if (publishBtns.length === 1) {
+                        publishBtns[0].click();
+                        return { clicked: true, index: 0 };
+                    }
+
+                    return { clicked: false, count: publishBtns.length };
                 }
             """)
-            logger.info("2단계 - JavaScript로 최종 발행 버튼 클릭")
-            await HumanDelay.wait("publish_wait")
+
+            if result.get("clicked"):
+                logger.info(f"2단계 - JavaScript로 발행 버튼 클릭 (인덱스: {result.get('index')})")
+                await asyncio.sleep(2)
+            else:
+                logger.error(f"발행 버튼을 찾을 수 없음 (발견된 버튼: {result.get('count')})")
+
         except Exception as e:
-            logger.warning(f"JavaScript 발행 클릭 실패: {e}")
+            logger.error(f"JavaScript 발행 클릭 실패: {e}")
 
     async def insert_image(self, image_path: str):
         """이미지 삽입 - 클립보드 붙여넣기 방식"""
@@ -1535,9 +1787,14 @@ class NaverBlogPoster:
             images: 삽입할 이미지 경로 리스트 (다중 이미지)
 
         Returns:
-            {"success": bool, "url": str, "error": str}
+            {
+                "success": bool,       # 발행 성공 여부
+                "url": str,            # 발행된 글 URL
+                "error": str,          # 에러 메시지
+                "verified": bool,      # 실제 게시글 확인 여부
+            }
         """
-        result = {"success": False, "url": "", "error": ""}
+        result = {"success": False, "url": "", "error": "", "verified": False}
 
         # 이미지 리스트 통합 (하위 호환성 유지)
         image_list = []
@@ -1573,8 +1830,25 @@ class NaverBlogPoster:
             # 6. 발행
             post_url = await self.publish_post()
 
-            result["success"] = True
-            result["url"] = post_url
+            # ★★★ 발행 결과 검증 ★★★
+            # URL에 PostView 또는 logNo가 포함되어 있으면 성공
+            if post_url and ("PostView" in post_url or "logNo=" in post_url):
+                result["success"] = True
+                result["verified"] = True
+                result["url"] = post_url
+                logger.success(f"✅ 포스팅 완료 (검증됨): {post_url}")
+            elif post_url and self.naver_id in post_url:
+                # URL은 있지만 게시글 확인 안 됨
+                result["success"] = True
+                result["verified"] = False
+                result["url"] = post_url
+                logger.warning(f"⚠️ 포스팅 완료 (미검증): {post_url}")
+            else:
+                # 발행 실패 가능성
+                result["success"] = False
+                result["error"] = "발행 후 게시글 URL을 확인할 수 없음"
+                result["url"] = post_url or ""
+                logger.error("❌ 포스팅 실패: 게시글 URL 미확인")
 
         except Exception as e:
             logger.error(f"포스팅 실패: {e}")
