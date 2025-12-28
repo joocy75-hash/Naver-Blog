@@ -32,17 +32,17 @@ services:
       - ./logs:/app/logs
       - ./generated_images:/app/generated_images
       - ./data:/app/data
-      - ./secrets:/app/secrets:ro
+      - ./secrets:/app/secrets
 
-    # 리소스 제한 (Group B 할당: 2GB)
+    # 리소스 제한 (Vultr 1 vCPU / 1GB RAM)
     deploy:
       resources:
         limits:
-          cpus: '1.5'
-          memory: 2G
+          cpus: '0.8'
+          memory: 900M
         reservations:
-          cpus: '0.5'
-          memory: 512M
+          cpus: '0.2'
+          memory: 256M
 
     # 로깅 설정
     logging:
