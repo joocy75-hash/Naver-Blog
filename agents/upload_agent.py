@@ -53,22 +53,30 @@ class UploadAgent:
         self,
         credential_manager: Optional[CredentialManager] = None,
         session_manager: Optional[SecureSessionManager] = None,
-        headless: bool = False
+        headless: bool = False,
+        use_cdp: bool = True,  # CDP 연결 시도 여부
+        cdp_endpoint: str = "http://127.0.0.1:9222"  # CDP 엔드포인트
     ):
         """
         Args:
             credential_manager: 자격증명 관리자
             session_manager: 세션 관리자
             headless: 헤드리스 모드 여부
+            use_cdp: True면 CDP 연결 시도 (로컬 환경), False면 직접 브라우저 실행 (서버 환경)
+            cdp_endpoint: CDP 연결 엔드포인트 (Chrome/Chromium DevTools Protocol)
         """
         self.cred_manager = credential_manager or CredentialManager()
         self.session_manager = session_manager or SecureSessionManager()
         self.headless = headless
+        self.use_cdp = use_cdp
+        self.cdp_endpoint = cdp_endpoint
         self.human_behavior = HumanBehavior()
 
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self._is_cdp = False  # CDP 연결 여부
+        self._playwright = None
 
     async def upload_post(
         self,
@@ -177,58 +185,114 @@ class UploadAgent:
         return result
 
     async def _start_browser(self):
-        """브라우저 시작 - Comet 브라우저 CDP 연결 우선"""
+        """
+        브라우저 시작
+
+        동작 방식:
+        1. use_cdp=True (로컬 환경): CDP 연결 시도 → 실패 시 일반 브라우저
+        2. use_cdp=False (서버 환경): 바로 headless 브라우저 실행
+        """
+
+        # 플래그 초기화
+        self._is_cdp = False
 
         self._playwright = await async_playwright().start()
 
-        # 1. Comet 브라우저 CDP 연결 시도 (포트 9222)
-        try:
-            logger.info("Comet 브라우저 연결 시도 중... (CDP 포트 9222)")
-            self.browser = await self._playwright.chromium.connect_over_cdp(
-                "http://127.0.0.1:9222"
-            )
-            # 기존 컨텍스트 사용 (로그인 상태 유지)
-            self._is_cdp = True  # CDP 연결 표시
-            contexts = self.browser.contexts
-            if contexts:
-                self.context = contexts[0]
-                logger.success("✅ Comet 브라우저 연결 성공! (기존 로그인 상태 사용)")
+        # CDP 연결 시도 (use_cdp=True인 경우에만)
+        if self.use_cdp:
+            try:
+                logger.info(f"Chrome CDP 연결 시도 중... ({self.cdp_endpoint})")
 
-                # 기존 페이지 사용 또는 새 페이지 생성
-                pages = self.context.pages
-                if pages:
-                    self.page = pages[0]
-                    logger.info(f"기존 페이지 사용: {self.page.url}")
+                # 타임아웃 설정으로 CDP 연결 시도
+                self.browser = await asyncio.wait_for(
+                    self._playwright.chromium.connect_over_cdp(self.cdp_endpoint),
+                    timeout=10.0
+                )
+
+                # 연결 성공 확인
+                if not self.browser.is_connected():
+                    raise Exception("CDP 브라우저가 연결되지 않음")
+
+                # 기존 컨텍스트 사용 (로그인 상태 유지)
+                self._is_cdp = True  # CDP 연결 표시
+                contexts = self.browser.contexts
+                if contexts:
+                    self.context = contexts[0]
+                    logger.success("✅ Chrome CDP 연결 성공! (기존 로그인 상태 사용)")
+
+                    # 기존 페이지 사용 또는 새 페이지 생성
+                    pages = self.context.pages
+                    if pages:
+                        self.page = pages[0]
+                        logger.info(f"기존 페이지 사용: {self.page.url}")
+                    else:
+                        self.page = await self.context.new_page()
+                        logger.info("새 페이지 생성")
+                    return
                 else:
+                    self.context = await self.browser.new_context()
                     self.page = await self.context.new_page()
-                    logger.info("새 페이지 생성")
-                return
-            else:
-                self.context = await self.browser.new_context()
-                self.page = await self.context.new_page()
-                logger.info("Comet 연결됨, 새 컨텍스트 생성")
-                return
+                    logger.info("CDP 연결됨, 새 컨텍스트 생성")
+                    return
 
-        except Exception as e:
-            logger.warning(f"Comet 연결 실패: {e}")
-            logger.info("일반 브라우저로 대체...")
+            except asyncio.TimeoutError:
+                logger.warning("CDP 연결 타임아웃 (10초)")
+                self._is_cdp = False
+            except Exception as e:
+                logger.warning(f"CDP 연결 실패: {e}")
+                self._is_cdp = False
 
-        # 2. Comet 연결 실패 시 일반 브라우저 실행
-        self.browser = await self._playwright.chromium.launch(
-            headless=self.headless,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
-                '--no-sandbox'
-            ]
-        )
+            # CDP 연결 실패 시 정리
+            if hasattr(self, 'browser') and self.browser:
+                try:
+                    await self.browser.close()
+                except:
+                    pass
+                self.browser = None
+
+        # CDP 미사용 또는 연결 실패 시 일반 브라우저 실행
+        if self.use_cdp:
+            logger.info("CDP 연결 실패, 일반 브라우저로 대체...")
+        else:
+            logger.info("Headless 브라우저 시작 중... (서버 모드)")
+
+        # 일반 브라우저 실행 (재시도 로직 포함)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self.browser = await self._playwright.chromium.launch(
+                    headless=self.headless,
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-dev-shm-usage',
+                        '--no-sandbox',
+                        '--disable-gpu',  # 헤드리스 안정성 향상
+                        '--disable-software-rasterizer'
+                    ]
+                )
+                logger.info(f"일반 브라우저 시작 성공 (시도 {attempt + 1}/{max_retries})")
+                break
+            except Exception as e:
+                logger.error(f"브라우저 시작 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    raise Exception(f"브라우저 시작 실패 (모든 재시도 실패): {e}")
+                await asyncio.sleep(2)  # 재시도 전 대기
 
         # 세션 복구 시도 (수동 로그인 세션 우선)
+        session_name = f"{self.current_naver_id}_manual" if hasattr(self, 'current_naver_id') else "default"
         self.context = await load_playwright_session(
             self.browser,
             self.session_manager,
-            session_name=f"{self.current_naver_id}_manual" if hasattr(self, 'current_naver_id') else "default"
+            session_name=session_name
         )
+
+        # clipboard 세션 시도
+        if not self.context and hasattr(self, 'current_naver_id'):
+            self.context = await load_playwright_session(
+                self.browser,
+                self.session_manager,
+                session_name=f"{self.current_naver_id}_clipboard"
+            )
 
         # 기본 세션 시도
         if not self.context:
@@ -260,33 +324,52 @@ class UploadAgent:
         logger.info("브라우저 시작 완료")
 
     async def _close_browser(self):
-        """브라우저 종료 - Comet 연결 시 브라우저는 유지"""
-        # CDP로 연결된 경우 (Comet) 브라우저는 닫지 않음
+        """브라우저 종료 - CDP 연결 시 브라우저는 유지"""
+        # CDP로 연결된 경우 브라우저는 닫지 않음 (Comet/Chrome CDP)
         is_cdp_connection = hasattr(self, '_is_cdp') and self._is_cdp
 
-        if self.page and not is_cdp_connection:
-            try:
-                await self.page.close()
-            except Exception:
-                pass
+        if is_cdp_connection:
+            # CDP 연결인 경우: 페이지만 정리하고 브라우저는 유지
+            if self.page:
+                try:
+                    # CDP에서 생성한 페이지만 닫음
+                    if self.page.url != 'about:blank':
+                        await self.page.close()
+                except Exception as e:
+                    logger.debug(f"CDP 페이지 닫기 실패 (무시): {e}")
+            self.page = None
+            self.context = None
+            self.browser = None
+        else:
+            # 일반 브라우저인 경우: 모두 정리
+            if self.page:
+                try:
+                    await self.page.close()
+                except Exception:
+                    pass
 
-        if self.context and not is_cdp_connection:
-            try:
-                await self.context.close()
-            except Exception:
-                pass
+            if self.context:
+                try:
+                    await self.context.close()
+                except Exception:
+                    pass
 
-        if self.browser and not is_cdp_connection:
-            try:
-                await self.browser.close()
-            except Exception:
-                pass
+            if self.browser:
+                try:
+                    await self.browser.close()
+                except Exception:
+                    pass
 
+        # Playwright 인스턴스 정리
         if hasattr(self, '_playwright') and self._playwright:
             try:
                 await self._playwright.stop()
             except Exception:
                 pass
+            self._playwright = None
+
+        # 플래그 초기화
+        self._is_cdp = False
 
         logger.info("브라우저 연결 정리 완료")
 

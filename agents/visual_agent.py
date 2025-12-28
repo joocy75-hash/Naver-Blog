@@ -12,8 +12,15 @@ from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-import google.generativeai as genai
 from loguru import logger
+
+# 새로운 google.genai 패키지 사용
+try:
+    from google import genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
+    logger.warning("google-genai 패키지가 설치되지 않음. pip install google-genai")
 
 from security.credential_manager import CredentialManager
 
@@ -56,13 +63,17 @@ class VisualAgent:
                 logger.warning(f"Gemini 이미지 생성기 초기화 실패: {e}, Pillow 폴백 사용")
                 self.gemini_image = None
 
-        # Gemini Pro API 설정 (텍스트 분석용)
-        google_key = self.cred_manager.get_api_key("google")
-        if google_key:
-            genai.configure(api_key=google_key)
-            self.gemini = genai.GenerativeModel('gemini-1.5-pro')
-        else:
-            self.gemini = None
+        # Gemini Pro API 설정 (텍스트 분석용, 새로운 google.genai 패키지)
+        self.gemini = None
+        if GENAI_AVAILABLE:
+            google_key = self.cred_manager.get_api_key("google")
+            if google_key:
+                try:
+                    self.gemini_client = genai.Client(api_key=google_key)
+                    self.gemini = self.gemini_client.models
+                    logger.info("Gemini API 클라이언트 초기화 완료 (텍스트 분석용)")
+                except Exception as e:
+                    logger.warning(f"Gemini 초기화 실패: {e}")
 
     def generate_images(
         self,

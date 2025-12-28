@@ -8,8 +8,15 @@ Quality Assurance Agent
 
 from typing import Dict, Any, List, Optional, Tuple
 from anthropic import Anthropic
-import google.generativeai as genai
 from loguru import logger
+
+# 새로운 google.genai 패키지 사용
+try:
+    from google import genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
+    logger.warning("google-genai 패키지가 설치되지 않음. pip install google-genai")
 
 from security.credential_manager import CredentialManager
 
@@ -65,13 +72,17 @@ class QAAgent:
         anthropic_key = self.cred_manager.get_api_key("anthropic")
         self.claude = Anthropic(api_key=anthropic_key) if anthropic_key else None
 
-        # Gemini 클라이언트
-        google_key = self.cred_manager.get_api_key("google")
-        if google_key:
-            genai.configure(api_key=google_key)
-            self.gemini = genai.GenerativeModel('gemini-1.5-pro')
-        else:
-            self.gemini = None
+        # Gemini 클라이언트 (새로운 google.genai 패키지)
+        self.gemini = None
+        if GENAI_AVAILABLE:
+            google_key = self.cred_manager.get_api_key("google")
+            if google_key:
+                try:
+                    self.gemini_client = genai.Client(api_key=google_key)
+                    self.gemini = self.gemini_client.models
+                    logger.info("Gemini API 클라이언트 초기화 완료")
+                except Exception as e:
+                    logger.warning(f"Gemini 초기화 실패: {e}")
 
     def validate_content(
         self,
