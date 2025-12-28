@@ -4,7 +4,8 @@
 # ============================================
 
 # Playwright 공식 이미지 사용 (모든 브라우저 의존성 포함)
-FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
+# 2025-12-28: v1.57.0으로 업데이트 (브라우저 시작 오류 해결)
+FROM mcr.microsoft.com/playwright/python:v1.57.0-noble
 
 # 메타데이터
 LABEL maintainer="mr.joo"
@@ -33,10 +34,17 @@ COPY . .
 RUN mkdir -p /app/logs /app/generated_images /app/data/cache /app/data/sessions
 
 # 환경 변수 설정
+# - HEADLESS: 브라우저 헤드리스 모드 (True 권장)
+# - USE_CDP: Chrome DevTools Protocol 사용 여부 (Docker에서는 False 권장)
+# - CDP_TIMEOUT: CDP 연결 타임아웃 초 (기본 3초)
+# - SESSION_MAX_AGE_DAYS: 세션 최대 유효 기간 일수 (기본 7일)
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Seoul \
-    HEADLESS=True
+    HEADLESS=True \
+    USE_CDP=False \
+    CDP_TIMEOUT=3 \
+    SESSION_MAX_AGE_DAYS=7
 
 # 헬스체크 (30초 간격, 10초 타임아웃)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

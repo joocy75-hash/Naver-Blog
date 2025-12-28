@@ -104,3 +104,7 @@ generated_images/
 data/cache/
 data/sessions/
 data/logs/
+
+# 개인 테스트 파일 (계정 정보 포함 가능)
+check_posts.py
+monitoring/dashboard.py

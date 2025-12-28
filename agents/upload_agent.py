@@ -7,6 +7,7 @@ Upload Orchestrator Agent
 """
 
 import asyncio
+import os
 import random
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -14,7 +15,18 @@ from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 from loguru import logger
 
 from security.credential_manager import CredentialManager
-from security.session_manager import SecureSessionManager, save_playwright_session, load_playwright_session
+from security.session_manager import (
+    SecureSessionManager,
+    load_playwright_session,
+    renew_playwright_session
+)
+
+# 환경 변수에서 설정 읽기
+HEADLESS_MODE = os.environ.get('HEADLESS', 'True').lower() == 'true'
+# CDP 사용 여부 (로컬 개발: True, 서버/Docker: False 권장)
+USE_CDP_DEFAULT = os.environ.get('USE_CDP', 'False').lower() == 'true'
+# CDP 연결 타임아웃 (초) - 서버에서 불필요한 대기 시간 최소화
+CDP_TIMEOUT = float(os.environ.get('CDP_TIMEOUT', '3'))
 
 
 class HumanBehavior:
@@ -53,22 +65,25 @@ class UploadAgent:
         self,
         credential_manager: Optional[CredentialManager] = None,
         session_manager: Optional[SecureSessionManager] = None,
-        headless: bool = False,
-        use_cdp: bool = True,  # CDP 연결 시도 여부
+        headless: bool = None,  # None이면 환경 변수에서 읽음
+        use_cdp: bool = None,  # None이면 환경 변수에서 읽음 (기본: False)
         cdp_endpoint: str = "http://127.0.0.1:9222"  # CDP 엔드포인트
     ):
         """
         Args:
             credential_manager: 자격증명 관리자
             session_manager: 세션 관리자
-            headless: 헤드리스 모드 여부
-            use_cdp: True면 CDP 연결 시도 (로컬 환경), False면 직접 브라우저 실행 (서버 환경)
+            headless: 헤드리스 모드 여부 (None이면 HEADLESS 환경변수 사용)
+            use_cdp: CDP 연결 시도 여부 (None이면 USE_CDP 환경변수 사용, 기본 False)
             cdp_endpoint: CDP 연결 엔드포인트 (Chrome/Chromium DevTools Protocol)
         """
         self.cred_manager = credential_manager or CredentialManager()
         self.session_manager = session_manager or SecureSessionManager()
-        self.headless = headless
-        self.use_cdp = use_cdp
+        # headless가 명시적으로 지정되지 않으면 환경 변수 사용
+        self.headless = headless if headless is not None else HEADLESS_MODE
+        # use_cdp가 명시적으로 지정되지 않으면 환경 변수 사용 (서버 환경에서는 기본 False)
+        self.use_cdp = use_cdp if use_cdp is not None else USE_CDP_DEFAULT
+        logger.info(f"UploadAgent 초기화: headless={self.headless}, use_cdp={self.use_cdp}")
         self.cdp_endpoint = cdp_endpoint
         self.human_behavior = HumanBehavior()
 
@@ -158,13 +173,20 @@ class UploadAgent:
                 result["post_url"] = post_url
                 logger.success(f"포스트 업로드 성공: {post_url}")
 
-                # 세션 저장
-                await save_playwright_session(
-                    self.context,
-                    self.session_manager,
-                    session_name="default",
-                    account_id=naver_id
-                )
+                # 세션 갱신 (유효기간 연장)
+                try:
+                    renewal_success = await renew_playwright_session(
+                        self.context,
+                        self.session_manager,
+                        session_name="default"
+                    )
+                    if renewal_success:
+                        logger.info("✅ 세션 갱신 완료 - 유효기간 7일 연장")
+                    else:
+                        logger.warning("⚠️ 세션 갱신 실패 - 포스팅은 성공했지만 세션이 곧 만료될 수 있습니다")
+                except Exception as e:
+                    logger.error(f"⚠️ 세션 갱신 중 오류: {e}")
+                    logger.error("포스팅은 성공했지만 세션 갱신에 문제가 발생했습니다")
 
                 break  # 성공하면 루프 종료
 
@@ -203,10 +225,10 @@ class UploadAgent:
             try:
                 logger.info(f"Chrome CDP 연결 시도 중... ({self.cdp_endpoint})")
 
-                # 타임아웃 설정으로 CDP 연결 시도
+                # 타임아웃 설정으로 CDP 연결 시도 (환경변수 CDP_TIMEOUT, 기본 3초)
                 self.browser = await asyncio.wait_for(
                     self._playwright.chromium.connect_over_cdp(self.cdp_endpoint),
-                    timeout=10.0
+                    timeout=CDP_TIMEOUT
                 )
 
                 # 연결 성공 확인
@@ -236,7 +258,7 @@ class UploadAgent:
                     return
 
             except asyncio.TimeoutError:
-                logger.warning("CDP 연결 타임아웃 (10초)")
+                logger.warning(f"CDP 연결 타임아웃 ({CDP_TIMEOUT}초)")
                 self._is_cdp = False
             except Exception as e:
                 logger.warning(f"CDP 연결 실패: {e}")
@@ -258,6 +280,7 @@ class UploadAgent:
 
         # 일반 브라우저 실행 (재시도 로직 포함)
         max_retries = 3
+        last_error = None
         for attempt in range(max_retries):
             try:
                 self.browser = await self._playwright.chromium.launch(
@@ -267,15 +290,25 @@ class UploadAgent:
                         '--disable-dev-shm-usage',
                         '--no-sandbox',
                         '--disable-gpu',  # 헤드리스 안정성 향상
-                        '--disable-software-rasterizer'
+                        '--disable-software-rasterizer',
+                        '--disable-setuid-sandbox',  # Docker 환경 호환성
+                        '--renderer-process-limit=2',  # 메모리 최적화 (--single-process보다 안전)
                     ]
                 )
                 logger.info(f"일반 브라우저 시작 성공 (시도 {attempt + 1}/{max_retries})")
                 break
             except Exception as e:
-                logger.error(f"브라우저 시작 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+                last_error = e
+                error_msg = str(e)
+                logger.error(f"브라우저 시작 실패 (시도 {attempt + 1}/{max_retries}): {error_msg}")
+
+                # Playwright 버전 불일치 힌트
+                if "Looks like" in error_msg or "browser" in error_msg.lower():
+                    logger.error("💡 힌트: Playwright 브라우저가 설치되지 않았거나 버전 불일치일 수 있습니다.")
+                    logger.error("   해결: 'playwright install chromium' 실행 또는 Docker 이미지 재빌드")
+
                 if attempt == max_retries - 1:
-                    raise Exception(f"브라우저 시작 실패 (모든 재시도 실패): {e}")
+                    raise Exception(f"브라우저 시작 실패 (모든 재시도 실패): {last_error}")
                 await asyncio.sleep(2)  # 재시도 전 대기
 
         # 세션 복구 시도 (수동 로그인 세션 우선)
@@ -342,30 +375,44 @@ class UploadAgent:
             self.browser = None
         else:
             # 일반 브라우저인 경우: 모두 정리
+            cleanup_errors = []
+
             if self.page:
                 try:
                     await self.page.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    error_msg = f"페이지 닫기 실패: {type(e).__name__} - {e}"
+                    logger.debug(error_msg)
+                    cleanup_errors.append(error_msg)
 
             if self.context:
                 try:
                     await self.context.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    error_msg = f"컨텍스트 닫기 실패: {type(e).__name__} - {e}"
+                    logger.debug(error_msg)
+                    cleanup_errors.append(error_msg)
 
             if self.browser:
                 try:
                     await self.browser.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    error_msg = f"브라우저 닫기 실패: {type(e).__name__} - {e}"
+                    logger.debug(error_msg)
+                    cleanup_errors.append(error_msg)
+
+            if cleanup_errors:
+                logger.warning(
+                    f"⚠️ 브라우저 정리 중 {len(cleanup_errors)}개 오류 발생:\n" +
+                    "\n".join(f"  - {err}" for err in cleanup_errors)
+                )
 
         # Playwright 인스턴스 정리
         if hasattr(self, '_playwright') and self._playwright:
             try:
                 await self._playwright.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Playwright 정리 실패: {type(e).__name__} - {e}")
             self._playwright = None
 
         # 플래그 초기화

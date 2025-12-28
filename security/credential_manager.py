@@ -3,6 +3,7 @@
 - 시스템 키체인을 통한 안전한 비밀번호 저장
 - 환경 변수 암호화/복호화
 - API 키 안전 관리
+- Docker 환경 자동 감지 및 호환성 지원
 """
 
 import os
@@ -11,6 +12,56 @@ from cryptography.fernet import Fernet
 from typing import Optional
 from pathlib import Path
 from loguru import logger
+
+
+def is_docker_environment() -> bool:
+    """
+    Docker 환경인지 자동 감지 (cgroup v1/v2 모두 지원)
+
+    감지 방법:
+    1. /.dockerenv 파일 존재 (Docker 전용)
+    2. /run/.containerenv 파일 존재 (Podman 등)
+    3. /proc/1/cgroup 내용 확인 (cgroup v1/v2)
+    4. 환경 변수 RUNNING_IN_DOCKER
+    """
+    # 1. Docker 환경 파일 확인
+    if Path("/.dockerenv").exists():
+        return True
+
+    # 2. 컨테이너 환경 파일 확인 (Podman, containerd 등)
+    if Path("/run/.containerenv").exists():
+        return True
+
+    # 3. cgroup에서 docker/containerd 확인 (v1 및 v2 지원)
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            content = f.read().lower()
+            # cgroup v1: "docker" 문자열 포함
+            # cgroup v2: "containerd", "docker" 등 포함
+            if any(keyword in content for keyword in ["docker", "containerd", "kubepods"]):
+                return True
+    except (FileNotFoundError, PermissionError):
+        pass
+
+    # 4. 환경변수 확인
+    if os.environ.get("RUNNING_IN_DOCKER", "").lower() == "true":
+        return True
+
+    # 5. 컨테이너 특정 환경변수 확인
+    if os.environ.get("container"):  # systemd-nspawn, Podman 등에서 설정
+        return True
+
+    return False
+
+
+# Docker 환경 여부 (모듈 로드 시 한 번만 확인)
+IS_DOCKER = is_docker_environment()
+
+# Docker 환경에서는 keyring 비활성화 (headless 환경에서 동작하지 않음)
+KEYRING_AVAILABLE = not IS_DOCKER
+
+if IS_DOCKER:
+    logger.info("Docker 환경 감지: 환경 변수 우선 모드 활성화")
 
 
 class CredentialManager:
@@ -85,17 +136,53 @@ class CredentialManager:
             return False
 
     def get_api_key(self, service: str) -> Optional[str]:
-        """API 키를 키체인에서 불러오기"""
-        try:
-            api_key = keyring.get_password(self.API_SERVICE, service)
+        """API 키를 환경변수 또는 키체인에서 불러오기 (Docker 호환)"""
+        # 환경변수 이름 매핑
+        env_var_map = {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "google": "GOOGLE_API_KEY",
+            "gemini": "GEMINI_API_KEY",
+            "perplexity": "PERPLEXITY_API_KEY",
+            "brave": "BRAVE_API_KEY",
+            "telegram": "TELEGRAM_BOT_TOKEN",
+        }
+
+        # 1. 환경변수 확인 (Docker/서버 환경 우선)
+        env_var = env_var_map.get(service.lower())
+        if env_var:
+            api_key = os.environ.get(env_var)
             if api_key:
-                logger.info(f"API 키 불러오기 완료: {service}")
-            else:
-                logger.warning(f"키체인에 API 키 없음: {service}")
-            return api_key
-        except Exception as e:
-            logger.error(f"API 키 불러오기 실패 ({service}): {e}")
-            return None
+                logger.info(f"환경변수에서 API 키 로드: {service}")
+                return api_key
+
+        # 2. 키체인 시도 (로컬 환경에서만)
+        if KEYRING_AVAILABLE:
+            try:
+                api_key = keyring.get_password(self.API_SERVICE, service)
+                if api_key:
+                    logger.info(f"키체인에서 API 키 로드: {service}")
+                    return api_key
+            except keyring.errors.KeyringError as e:
+                # 키체인 특정 오류 (권한, 잠금 등)
+                logger.warning(f"키체인 접근 오류 ({service}): {type(e).__name__} - {e}")
+            except Exception as e:
+                # 예상치 못한 오류
+                logger.warning(f"키체인 접근 중 예상치 못한 오류 ({service}): {type(e).__name__} - {e}")
+        else:
+            logger.debug(f"Docker 환경: 키체인 접근 생략 ({service})")
+
+        # API 키를 찾을 수 없음 - 상세 안내 제공
+        env_var_name = env_var_map.get(service.lower(), "UNKNOWN")
+        logger.error(
+            f"❌ API 키를 찾을 수 없습니다: {service}\n"
+            f"   환경변수: {env_var_name}\n"
+            f"   키체인 가능: {KEYRING_AVAILABLE}\n"
+            f"   해결방법:\n"
+            f"     1. 환경변수 설정: export {env_var_name}='your_api_key'\n"
+            f"     2. 또는 .env 파일에 추가: {env_var_name}=your_api_key\n"
+            f"     3. 로컬 환경: python -m security.credential_manager (키체인 저장)"
+        )
+        return None
 
     # ============================================
     # 파일 암호화 (백업용)

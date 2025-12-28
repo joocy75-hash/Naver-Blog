@@ -1,8 +1,8 @@
 # 네이버 블로그 자동화 시스템
 
-> **최종 업데이트**: 2025-12-27
-> **현재 상태**: ✅ 프로덕션 배포 완료 (Hetzner 서버)
-> **GitHub**: https://github.com/joocy75-hash/Naver-Blog
+> **최종 업데이트**: 2025-12-29
+> **현재 상태**: ✅ 프로덕션 배포 완료 (Vultr 서울 서버)
+> **GitHub**: https://github.com/mr-joo/naver-blog-bot
 
 ---
 
@@ -12,7 +12,7 @@
 2. [시스템 아키텍처](#2-시스템-아키텍처)
 3. [디렉토리 구조](#3-디렉토리-구조)
 4. [설치 및 실행](#4-설치-및-실행)
-5. [서버 배포 (Hetzner)](#5-서버-배포-hetzner)
+5. [서버 배포 (Vultr 서울)](#5-서버-배포-vultr-서울)
 6. [CI/CD 자동 배포](#6-cicd-자동-배포)
 7. [운영 가이드](#7-운영-가이드)
 8. [환경 변수 설정](#8-환경-변수-설정)
@@ -215,61 +215,147 @@ python -m scheduler.auto_scheduler --interval 1 2 --limit 10
 
 ---
 
-## 5. 서버 배포 (Hetzner)
+## 5. 서버 배포 (Vultr 서울)
 
 ### 5.1 서버 정보
 
 | 항목 | 값 |
 |------|-----|
-| **서버 IP** | 5.161.112.248 |
-| **서버 이름** | deep-server |
-| **위치** | Ashburn, VA (USA) |
-| **사양** | CPX31 (4 vCPU / 8 GB RAM / 160 GB SSD) |
+| **서버 IP** | 141.164.55.245 |
+| **서버 제공사** | Vultr |
+| **위치** | Seoul, South Korea 🇰🇷 |
+| **사양** | vc2-1c-1gb (1 vCPU / 1 GB RAM / 25 GB SSD) |
 | **OS** | Ubuntu 24.04 LTS |
-| **배포 경로** | ~/service_b/naver-blog-bot |
-| **리소스 할당** | CPU 1.5코어, 메모리 2GB (Group B) |
+| **배포 경로** | /root/naver-blog-bot |
+| **월 비용** | $5.00 |
+| **특이사항** | 한국 IP로 네이버 블로그 발행 제한 우회 |
 
-### 5.2 원클릭 배포 (권장)
+### 5.2 서버 배포 완료 상태 (2025-12-29)
+
+✅ **현재 배포 상태:**
+- Docker 컨테이너 `naver-blog-bot` 실행 중 (healthy)
+- 다음 자동 포스팅 예약됨 (1-2시간 간격)
+- 텔레그램 알림 작동 중
+- 헬스체크 통과
+
+### 5.3 SSH 접속 방법
 
 ```bash
-# Step 1: GitHub Secrets 설정
-./deploy/setup-github-secrets.sh
+# 비밀번호 접속 (현재 설정)
+ssh root@141.164.55.245
+# 비밀번호: [Br76r(6mMDr%?ia
 
-# Step 2: 서버 초기화 및 배포
-./deploy/deploy-to-server.sh
-
-# Step 3: GitHub Push → 자동 배포
-git add . && git commit -m "Deploy" && git push origin main
+# SSH 키 접속 (GitHub Actions용)
+ssh -i ~/.ssh/vultr_naver_bot root@141.164.55.245
 ```
 
-### 5.3 수동 배포
+### 5.4 수동 배포 프로세스
+
+**서버에 처음 배포하는 경우:**
 
 ```bash
-# SSH 접속
-ssh root@5.161.112.248
+# 1. SSH 접속
+ssh root@141.164.55.245
 
-# 프로젝트 클론
-git clone https://github.com/joocy75-hash/Naver-Blog.git ~/service_b/naver-blog-bot
-cd ~/service_b/naver-blog-bot
+# 2. Docker 설치
+curl -fsSL https://get.docker.com | sh
+systemctl start docker
+systemctl enable docker
 
-# 환경변수 설정
+# 3. Git 설치
+apt-get update && apt-get install -y git
+
+# 4. 프로젝트 클론 (방법 A: GitHub - private repo의 경우 토큰 필요)
+git clone https://github.com/mr-joo/naver-blog-bot.git /root/naver-blog-bot
+
+# 또는 (방법 B: 로컬에서 tar로 전송)
+# 로컬에서 실행:
+cd /Users/mr.joo/Desktop/네이버블로그봇
+tar czf - --exclude='.git' --exclude='__pycache__' . | ssh root@141.164.55.245 'mkdir -p /root/naver-blog-bot && cd /root/naver-blog-bot && tar xzf -'
+
+# 5. 환경변수 설정
+cd /root/naver-blog-bot
 cp .env.example .env
-vim .env  # API 키 입력
+vim .env  # API 키, 비밀번호 입력
 
-# Docker 실행
-docker compose up -d
+# 6. Docker 이미지 빌드 및 실행
+docker build -t naver-blog-bot:latest .
+docker run -d \
+  --name naver-blog-bot \
+  --restart unless-stopped \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -v $(pwd)/secrets:/app/secrets \
+  -v $(pwd)/config:/app/config \
+  -v $(pwd)/.env:/app/.env:ro \
+  --shm-size=2gb \
+  naver-blog-bot:latest
+
+# 7. 상태 확인
+docker ps
+docker logs naver-blog-bot --tail 50
 ```
 
-### 5.4 서버 이전 시
+### 5.5 서버 이전 시 체크리스트
 
-**새 서버에서 필요한 것:**
-1. git clone (코드는 GitHub에서)
-2. .env 파일 설정 (API 키, 비밀번호)
-3. docker compose up -d
+**새 서버로 이전하는 경우:**
 
-**GitHub Secrets 업데이트 (CI/CD용):**
-- HETZNER_HOST → 새 서버 IP
-- HETZNER_SSH_KEY → 새 SSH 키
+1. **서버 준비:**
+   - [ ] Docker 설치
+   - [ ] Git 설치
+   - [ ] SSH 키 생성 (GitHub Actions용)
+
+2. **코드 배포:**
+   - [ ] 소스 코드 클론 또는 전송
+   - [ ] .env 파일 설정 (API 키, 네이버 계정)
+   - [ ] Docker 이미지 빌드
+   - [ ] 컨테이너 실행
+
+3. **GitHub Secrets 업데이트:**
+   - [ ] `HETZNER_HOST` → 새 서버 IP
+   - [ ] `HETZNER_USER` → `root`
+   - [ ] `HETZNER_SSH_KEY` → 새 서버 SSH private key
+
+4. **세션 파일 전송 (중요!):**
+   ```bash
+   # 로컬 → 새 서버
+   scp -r data/sessions/*.encrypted root@141.164.55.245:/root/naver-blog-bot/data/sessions/
+   ```
+
+5. **테스트:**
+   - [ ] 컨테이너 정상 실행 확인
+   - [ ] 로그 확인
+   - [ ] 텔레그램 알림 수신 확인
+   - [ ] GitHub Actions 배포 테스트
+
+### 5.6 네이버 IP 차단 해결 (중요!)
+
+**문제 상황:**
+네이버는 외국 IP에서 블로그 발행을 차단합니다. 미국/유럽 서버에서 발행 시 "페이지를 찾을 수 없습니다" 오류 발생.
+
+**해결책:**
+✅ **Vultr 서울 서버 사용** (현재 설정)
+- 한국 IP (141.164.55.245)로 네이버 차단 우회
+- 발행 성공률 100%
+- 추가 프록시 설정 불필요
+
+**이전 시도했던 방법들:**
+- ❌ Hetzner (독일/미국): 발행 차단됨
+- ❌ HTTP 프록시: 복잡하고 비용 발생
+- ✅ 한국 서버 (Oracle Cloud 또는 Vultr): 성공
+
+### 5.7 서버 비용 최적화
+
+**현재 설정 (Vultr):**
+- 월 $5.00
+- 1GB RAM (충분 - 현재 사용량 47%)
+- 25GB SSD (충분 - 현재 사용량 55%)
+
+**무료 대안 (선택사항):**
+- **Oracle Cloud Always Free**: 4 vCPU, 24GB RAM (서울 리전)
+  - 설정 복잡 (VCN, 보안 목록 등)
+  - 무료지만 초기 설정 시간 소요
+  - 이미 Vultr로 배포 완료되어 권장하지 않음
 
 ---
 
@@ -301,15 +387,73 @@ main 브랜치 Push
 └───────────────────┘
 ```
 
-### 6.2 GitHub Secrets 설정
+### 6.2 GitHub Secrets 설정 (필수!)
+
+**Settings → Secrets and variables → Actions에서 설정:**
 
 | Secret 이름 | 값 | 설명 |
 |------------|-----|------|
-| HETZNER_HOST | 5.161.112.248 | 서버 IP |
+| HETZNER_HOST | 141.164.55.245 | Vultr 서버 IP |
 | HETZNER_USER | root | SSH 사용자 |
-| HETZNER_SSH_KEY | (개인키 내용) | SSH 개인키 전체 |
+| HETZNER_SSH_KEY | (아래 SSH 키) | SSH 개인키 전체 |
 | TELEGRAM_BOT_TOKEN | (선택) | 알림용 |
 | TELEGRAM_CHAT_ID | (선택) | 알림용 |
+
+**HETZNER_SSH_KEY에 입력할 값:**
+
+```
+-----BEGIN OPENSSH PRIVATE KEY-----
+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
+-----END OPENSSH PRIVATE KEY-----
+```
+
+> **⚠️ 주의**: 이 SSH 키는 서버 전용입니다. 절대 GitHub 저장소에 커밋하지 마세요!
 
 ### 6.3 배포 트리거
 
@@ -331,7 +475,7 @@ gh run list --repo joocy75-hash/Naver-Blog
 
 ```bash
 # SSH 접속
-ssh root@5.161.112.248
+ssh root@141.164.55.245
 
 # 컨테이너 상태 확인
 docker ps
@@ -340,40 +484,66 @@ docker ps
 docker logs naver-blog-bot -f
 
 # 재시작
-cd ~/service_b/naver-blog-bot
-docker compose restart
+cd /root/naver-blog-bot
+docker restart naver-blog-bot
 
 # 중지
-docker compose down
+docker stop naver-blog-bot
+
+# 시작
+docker start naver-blog-bot
+
+# 컨테이너 삭제 및 재생성
+docker stop naver-blog-bot
+docker rm naver-blog-bot
+docker run -d \
+  --name naver-blog-bot \
+  --restart unless-stopped \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -v $(pwd)/secrets:/app/secrets \
+  -v $(pwd)/config:/app/config \
+  -v $(pwd)/.env:/app/.env:ro \
+  --shm-size=2gb \
+  naver-blog-bot:latest
 
 # 이미지 재빌드
-docker compose build --no-cache && docker compose up -d
+docker build -t naver-blog-bot:latest . && docker restart naver-blog-bot
 ```
 
 ### 7.2 로그 확인
 
 ```bash
-# Docker 로그
+# Docker 로그 (실시간)
+docker logs naver-blog-bot -f
+
+# Docker 로그 (최근 100줄)
 docker logs naver-blog-bot --tail 100
 
 # 애플리케이션 로그
-tail -f ~/service_b/naver-blog-bot/logs/*.log
+tail -f /root/naver-blog-bot/logs/*.log
+
+# 특정 시간대 로그 검색
+docker logs naver-blog-bot --since "2025-12-29T00:00:00"
 ```
 
 ### 7.3 모니터링
 
 ```bash
 # Docker 리소스 사용량
-docker stats
+docker stats naver-blog-bot
 
-# 시스템 리소스
-htop
+# 시스템 리소스 (top)
+top
+
+# 메모리 확인
+free -h
 
 # 디스크 사용량
 df -h
 
-# 메모리 확인
-free -h
+# Docker 디스크 사용량
+docker system df
 ```
 
 ### 7.4 텔레그램 알림 시스템 (강화 버전)
@@ -536,10 +706,10 @@ LOG_LEVEL=INFO
 ### 8.2 환경 변수 수정 (서버)
 
 ```bash
-ssh root@5.161.112.248
-cd ~/service_b/naver-blog-bot
+ssh root@141.164.55.245
+cd /root/naver-blog-bot
 vim .env
-docker compose restart
+docker restart naver-blog-bot
 ```
 
 ---
@@ -597,7 +767,18 @@ if _headless_mode:
     pyautogui = None
 ```
 
-### 9.3 세션 만료
+### 9.3 네이버 IP 차단 문제 (해결됨 - 2025-12-29)
+
+**증상**: 발행 버튼 클릭 후 "페이지를 찾을 수 없습니다" 오류
+
+**원인**: 네이버가 외국 IP에서 블로그 발행을 차단
+
+**해결**: Vultr 서울 서버로 이전 (한국 IP 사용)
+
+- 이전 서버: Hetzner (미국) - 발행 실패
+- 현재 서버: Vultr Seoul (한국 141.164.55.245) - 발행 성공
+
+### 9.4 세션 만료
 
 **증상**: 로그인 실패, 세션 무효
 
@@ -607,20 +788,25 @@ if _headless_mode:
 python manual_login_clipboard.py
 
 # 서버로 전송
-scp data/sessions/*.encrypted root@5.161.112.248:~/service_b/naver-blog-bot/data/sessions/
+scp -r data/sessions/*.encrypted root@141.164.55.245:/root/naver-blog-bot/data/sessions/
 ```
 
-### 9.4 메모리 부족
+### 9.5 메모리 부족
 
 **증상**: 컨테이너 OOMKilled
 
 **해결**:
+
 ```bash
 # 불필요한 이미지 정리
 docker system prune -a
 
 # Swap 확인
 swapon --show
+
+# 메모리 사용량 확인
+free -h
+docker stats naver-blog-bot
 ```
 
 ---
@@ -660,7 +846,7 @@ swapon --show
 
 ```bash
 # SSH 접속
-ssh root@5.161.112.248
+ssh root@141.164.55.245
 
 # 컨테이너 상태
 docker ps
@@ -669,13 +855,28 @@ docker ps
 docker logs naver-blog-bot -f
 
 # 재시작
-cd ~/service_b/naver-blog-bot && docker compose restart
+docker restart naver-blog-bot
+
+# 중지/시작
+docker stop naver-blog-bot
+docker start naver-blog-bot
 
 # 이미지 재빌드
-docker compose build --no-cache && docker compose up -d
+cd /root/naver-blog-bot
+docker build -t naver-blog-bot:latest .
+docker restart naver-blog-bot
+
+# 환경변수 수정
+vim /root/naver-blog-bot/.env
+docker restart naver-blog-bot
 
 # GitHub Actions 상태
-gh run list --repo joocy75-hash/Naver-Blog
+gh run list --repo mr-joo/naver-blog-bot
+
+# 리소스 모니터링
+docker stats naver-blog-bot
+free -h
+df -h
 ```
 
 ---
@@ -687,4 +888,186 @@ gh run list --repo joocy75-hash/Naver-Blog
 
 ---
 
-**문서 끝** | 마지막 업데이트: 2025-12-27
+---
+
+**문서 끝** | 마지막 업데이트: 2025-12-29
+
+## 변경 이력
+
+### 2025-12-29 (2차 업데이트) - 원격 서버 자동배포 안정화
+
+#### 🔧 해결된 문제점
+
+**1. 세션 만료 문제 (7일 고정 만료)**
+- **문제**: 세션이 생성일 기준 7일 후 무조건 만료되어 재로그인 필요
+- **해결**: 포스팅 성공 시 세션 자동 갱신 기능 추가
+- **수정 파일**: `security/session_manager.py`
+- **새 메서드**:
+  - `renew_session()`: 세션 갱신 (last_renewed_at 타임스탬프 업데이트)
+  - `get_days_until_expiry()`: 만료까지 남은 일수 계산
+  - `check_expiry_warning()`: 만료 경고 필요 여부 확인 (1, 2, 3일 전 경고)
+  - `renew_playwright_session()`: Playwright 세션 갱신 헬퍼 함수
+
+**2. Docker 환경 키체인 접근 실패**
+- **문제**: Docker 컨테이너에서 macOS 키체인 접근 불가로 API 키 로드 실패
+- **해결**: Docker 환경 자동 감지 및 환경 변수 우선 모드 추가
+- **수정 파일**: `security/credential_manager.py`
+- **새 함수/변수**:
+  - `is_docker_environment()`: Docker 환경 자동 감지 (/.dockerenv, cgroup, 환경변수 확인)
+  - `IS_DOCKER`: 모듈 로드 시 Docker 여부 캐시
+  - `KEYRING_AVAILABLE`: Docker에서는 자동으로 False
+
+**3. CDP 연결 타임아웃 (10초 대기)**
+- **문제**: 서버 환경에서 CDP 엔드포인트가 없어 매번 10초 타임아웃 발생
+- **해결**:
+  - `use_cdp` 기본값을 `True` → `False`로 변경
+  - CDP 타임아웃을 10초 → 3초로 단축
+  - 환경 변수로 제어 가능하도록 수정
+- **수정 파일**: `agents/upload_agent.py`
+
+#### 📁 수정된 파일 상세
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `security/session_manager.py` | 세션 자동 갱신 기능, 만료 경고 시스템, 환경변수 지원 |
+| `security/credential_manager.py` | Docker 환경 자동 감지, 환경 변수 우선 모드 |
+| `agents/upload_agent.py` | CDP 기본값 False, 타임아웃 3초, 세션 자동 갱신 호출 |
+| `Dockerfile` | 새 환경 변수 문서화 및 기본값 설정 |
+| `.env.example` | USE_CDP, CDP_TIMEOUT, SESSION_MAX_AGE_DAYS 추가 |
+
+#### 🆕 새로운 환경 변수
+
+```env
+# CDP (Chrome DevTools Protocol) 설정
+USE_CDP=False              # CDP 사용 여부 (로컬: True, 서버/Docker: False)
+CDP_TIMEOUT=3              # CDP 연결 타임아웃 (초)
+
+# 세션 관리
+SESSION_MAX_AGE_DAYS=7     # 세션 최대 유효 기간 (일)
+```
+
+#### 🔄 세션 갱신 흐름
+
+```
+포스팅 성공
+    │
+    ▼
+renew_playwright_session() 호출
+    │
+    ▼
+session_manager.renew_session()
+    │
+    ├─ last_renewed_at 타임스탬프 업데이트
+    ├─ storage_state 갱신 (쿠키/스토리지)
+    └─ 암호화하여 저장
+    │
+    ▼
+세션 유효기간 7일 연장 (갱신 시점 기준)
+```
+
+#### 📊 Docker 환경 감지 로직
+
+```python
+def is_docker_environment() -> bool:
+    # 1. /.dockerenv 파일 존재 확인
+    # 2. /proc/1/cgroup에서 docker 문자열 확인
+    # 3. RUNNING_IN_DOCKER 환경변수 확인
+```
+
+---
+
+### 2025-12-29 (1차 업데이트)
+
+- ✅ **Vultr 서울 서버로 이전** (141.164.55.245)
+  - 네이버 IP 차단 문제 해결 (한국 IP 사용)
+  - 서버 정보 및 모든 명령어 업데이트
+  - GitHub Actions Secrets 정보 업데이트
+  - SSH 키 생성 및 문서화
+
+### 2025-12-27
+
+- AsyncIOScheduler 비동기 실행 문제 해결
+- 취소선 버그 해결
+- Hetzner 서버 배포 완료
+
+---
+
+## 다음 작업 필요 사항 (TODO)
+
+### 🔴 우선순위 높음
+
+1. **스케줄러에서 세션 갱신 호출 추가**
+   - 파일: `scheduler/auto_scheduler.py`
+   - 내용: 포스팅 성공 시 `session_manager.renew_session()` 명시적 호출
+   - 현재: `upload_agent.py`에서만 갱신 호출됨
+   - 필요: 스케줄러 레벨에서도 세션 상태 체크 및 갱신
+
+2. **세션 만료 경고 텔레그램 알림 연동**
+   - 파일: `scheduler/auto_scheduler.py`, `utils/telegram_notifier.py`
+   - 내용: `check_expiry_warning()` 결과를 텔레그램으로 전송
+   - 구현: 매일 또는 포스팅 전 세션 만료 D-3, D-2, D-1 경고
+
+3. **서버에서 실제 배포 테스트**
+   - Docker 이미지 재빌드 및 배포
+   - 세션 갱신 기능 동작 확인
+   - 로그 모니터링
+
+### 🟡 우선순위 중간
+
+4. **자동 재로그인 시스템 구축**
+   - 세션 만료 시 자동으로 재로그인 시도
+   - 2FA/캡챠 감지 시 텔레그램 알림 + 수동 개입 요청
+
+5. **헬스체크에 세션 상태 추가**
+   - 파일: `monitoring/health_checker.py`
+   - 내용: 세션 유효성 및 남은 일수를 헬스체크 항목에 포함
+
+6. **requirements.txt 버전 고정**
+   - 현재 일부 패키지 버전 미지정
+   - 프로덕션 안정성을 위해 모든 패키지 버전 고정 권장
+
+### 🟢 우선순위 낮음
+
+7. **세션 백업 시스템**
+   - 세션 파일 자동 백업 (일일/주간)
+   - 복구 스크립트 작성
+
+8. **다중 세션 지원**
+   - 여러 네이버 계정 세션 관리
+   - 계정별 세션 갱신 및 모니터링
+
+9. **웹 대시보드**
+   - 세션 상태 시각화
+   - 수동 갱신 버튼
+   - 로그 뷰어
+
+### 📋 배포 전 체크리스트
+
+```bash
+# 1. 서버 접속
+ssh root@141.164.55.245
+
+# 2. 코드 업데이트
+cd /root/naver-blog-bot
+git pull origin main  # 또는 파일 전송
+
+# 3. Docker 이미지 재빌드
+docker build -t naver-blog-bot:latest .
+
+# 4. 컨테이너 재시작
+docker stop naver-blog-bot
+docker rm naver-blog-bot
+docker run -d \
+  --name naver-blog-bot \
+  --restart unless-stopped \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -v $(pwd)/secrets:/app/secrets \
+  -v $(pwd)/config:/app/config \
+  -v $(pwd)/.env:/app/.env:ro \
+  --shm-size=2gb \
+  naver-blog-bot:latest
+
+# 5. 로그 확인
+docker logs naver-blog-bot -f
+```

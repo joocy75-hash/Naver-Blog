@@ -4,7 +4,7 @@
 # ============================================
 
 # 브라우저 자동화
-playwright==1.49.1
+playwright==1.57.0
 playwright-stealth==1.0.6
 pyautogui==0.9.54              # 고급 마우스/키보드 제어
 pyperclip==1.9.0               # 클립보드 제어 (fill() 대안)

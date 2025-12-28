@@ -370,24 +370,62 @@ class HealthChecker:
                     message="저장된 세션 없음 - 로그인 필요"
                 )
 
-            # 세션 유효성 확인
+            # 세션 유효성 및 만료 정보 확인
             valid_sessions = []
+            session_expiry_info = {}
+            expiring_soon = []  # 3일 이내 만료 예정 세션
+
             for session_name in sessions:
                 if session_manager.is_session_valid(session_name, max_age_days=7):
                     valid_sessions.append(session_name)
 
+                    # 만료까지 남은 일수 계산
+                    days_until_expiry = session_manager.get_days_until_expiry(session_name, max_age_days=7)
+                    session_expiry_info[session_name] = {
+                        "days_until_expiry": days_until_expiry,
+                        "status": "healthy" if days_until_expiry > 3 else "expiring_soon"
+                    }
+
+                    # 3일 이내 만료 예정 체크
+                    if days_until_expiry <= 3:
+                        expiring_soon.append(session_name)
+                else:
+                    # 만료된 세션도 정보 추가
+                    days_until_expiry = session_manager.get_days_until_expiry(session_name, max_age_days=7)
+                    session_expiry_info[session_name] = {
+                        "days_until_expiry": days_until_expiry,
+                        "status": "expired"
+                    }
+
             if valid_sessions:
+                # 3일 이내 만료 예정 세션이 있으면 WARNING
+                if expiring_soon:
+                    return HealthCheckResult(
+                        component=component,
+                        status=HealthStatus.WARNING,
+                        message=f"세션 {len(expiring_soon)}개가 3일 이내 만료 예정 - 갱신 권장",
+                        details={
+                            "valid_sessions": valid_sessions,
+                            "expiring_soon": expiring_soon,
+                            "session_expiry_info": session_expiry_info
+                        }
+                    )
+
                 return HealthCheckResult(
                     component=component,
                     status=HealthStatus.HEALTHY,
                     message=f"유효한 세션 {len(valid_sessions)}개",
-                    details={"sessions": valid_sessions}
+                    details={
+                        "valid_sessions": valid_sessions,
+                        "session_expiry_info": session_expiry_info
+                    }
                 )
             else:
                 return HealthCheckResult(
                     component=component,
                     status=HealthStatus.WARNING,
-                    message="모든 세션이 만료됨 - 갱신 필요"
+                    message="모든 세션이 만료됨 - 갱신 필요",
+                    details={"session_expiry_info": session_expiry_info}
                 )
 
         except FileNotFoundError:
