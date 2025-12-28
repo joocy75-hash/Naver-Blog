@@ -39,7 +39,7 @@ class GeminiImageGenerator:
         self.output_dir = Path("./generated_images")
         self.output_dir.mkdir(exist_ok=True)
 
-        logger.info("Gemini 이미지 생성기 초기화 완료 (Gemini 3.0 Flash Preview)")
+        logger.info("Gemini 이미지 생성기 초기화 완료 (Gemini 3 Pro Image Preview)")
 
     def _load_api_key(self) -> Optional[str]:
         """키체인 또는 환경변수에서 API 키 로드"""
@@ -67,7 +67,7 @@ class GeminiImageGenerator:
         style: str = "digital-art"
     ) -> Optional[str]:
         """
-        Gemini 2.0 Flash를 사용한 이미지 생성
+        Gemini 3 Pro Image Preview를 사용한 이미지 생성
 
         Args:
             prompt: 이미지 설명 (영어 권장)
@@ -83,31 +83,32 @@ class GeminiImageGenerator:
         enhanced_prompt = self._enhance_prompt(prompt, style)
 
         try:
-            # Imagen 4.0 모델로 이미지 생성
-            response = self.client.models.generate_images(
-                model="imagen-4.0-generate-001",
-                prompt=enhanced_prompt,
-                config=types.GenerateImagesConfig(
-                    number_of_images=1,
-                    aspect_ratio="16:9",
-                    safety_filter_level="BLOCK_LOW_AND_ABOVE",
-                    person_generation="DONT_ALLOW",
+            # Gemini 3 Pro Image Preview 모델로 이미지 생성
+            # 주의: Google AI API는 aspect_ratio, image_size 등의 파라미터를 지원하지 않음
+            response = self.client.models.generate_content(
+                model="gemini-3-pro-image-preview",
+                contents=enhanced_prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=['IMAGE']
                 )
             )
 
-            # 이미지 저장
-            if response.generated_images:
-                image_data = response.generated_images[0].image.image_bytes
+            # 이미지 추출 및 저장
+            if response.candidates and len(response.candidates) > 0:
+                # 첫 번째 candidate의 parts에서 이미지 찾기
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        image_data = part.inline_data.data
 
-                if not filename:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"blog_image_{timestamp}.png"
+                        if not filename:
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            filename = f"blog_image_{timestamp}.png"
 
-                filepath = self.output_dir / filename
-                filepath.write_bytes(image_data)
+                        filepath = self.output_dir / filename
+                        filepath.write_bytes(image_data)
 
-                logger.success(f"이미지 생성 완료: {filepath}")
-                return str(filepath)
+                        logger.success(f"이미지 생성 완료: {filepath} ({len(image_data):,} bytes)")
+                        return str(filepath)
 
             logger.error("이미지 생성 결과 없음")
             return None
