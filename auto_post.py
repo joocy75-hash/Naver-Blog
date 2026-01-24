@@ -17,8 +17,23 @@ from security.session_manager import SecureSessionManager
 from utils.clipboard_input import ClipboardInputHelper
 from loguru import logger
 
+# Playwright Stealth - 봇 탐지 우회
+try:
+    from playwright_stealth import stealth_async
+    STEALTH_AVAILABLE = True
+    logger.info("playwright-stealth 로드됨 - 봇 탐지 우회 활성화")
+except ImportError:
+    STEALTH_AVAILABLE = False
+    logger.warning("playwright-stealth 미설치 - 기본 우회만 적용")
+
 # 환경 변수에서 HEADLESS 설정 읽기 (기본값: 서버에서는 True)
 HEADLESS_MODE = os.environ.get("HEADLESS", "True").lower() == "true"
+
+# Residential Proxy 설정 (Bright Data)
+PROXY_ENABLED = os.environ.get("PROXY_ENABLED", "False").lower() == "true"
+PROXY_SERVER = os.environ.get("PROXY_SERVER", "brd.superproxy.io:33335")
+PROXY_USERNAME = os.environ.get("PROXY_USERNAME", "")
+PROXY_PASSWORD = os.environ.get("PROXY_PASSWORD", "")
 
 
 class HumanDelay:
@@ -161,6 +176,18 @@ class NaverBlogPoster:
             ],
         )
 
+        # 프록시 설정 (Bright Data Residential Proxy)
+        proxy_config = None
+        if PROXY_ENABLED and PROXY_USERNAME and PROXY_PASSWORD:
+            proxy_config = {
+                "server": f"http://{PROXY_SERVER}",
+                "username": PROXY_USERNAME,
+                "password": PROXY_PASSWORD,
+            }
+            logger.info(f"🌐 Residential Proxy 활성화: {PROXY_SERVER}")
+        else:
+            logger.info("프록시 미사용 (직접 연결)")
+
         # 저장된 세션으로 컨텍스트 생성
         self.context = await self.browser.new_context(
             storage_state=storage_state,
@@ -170,16 +197,40 @@ class NaverBlogPoster:
             "Chrome/120.0.0.0 Safari/537.36",
             locale="ko-KR",
             timezone_id="Asia/Seoul",
+            proxy=proxy_config,
+            ignore_https_errors=True if proxy_config else False,  # 프록시 사용 시 SSL 인증서 무시
         )
 
-        # 봇 탐지 우회
-        await self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-        """)
-
         self.page = await self.context.new_page()
+
+        # 프록시 사용 시 타임아웃 증가 (프록시 지연 고려)
+        if proxy_config:
+            self.page.set_default_timeout(60000)  # 60초
+            self.page.set_default_navigation_timeout(60000)
+            logger.info("프록시용 타임아웃 설정: 60초")
+
+        # ★★★ Playwright Stealth 적용 - 봇 탐지 우회 강화 ★★★
+        if STEALTH_AVAILABLE:
+            await stealth_async(self.page)
+            logger.info("✅ playwright-stealth 적용 완료")
+        else:
+            # 기본 봇 탐지 우회 (stealth 미설치 시)
+            await self.context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                // Chrome 속성 추가
+                window.chrome = { runtime: {} };
+                // Permissions API 수정
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+                );
+            """)
+            logger.info("기본 봇 탐지 우회 적용")
+
         logger.success("브라우저 시작 완료 (세션 로드됨)")
 
     async def close_browser(self):
@@ -549,6 +600,67 @@ class NaverBlogPoster:
             pass
 
         logger.info("팝업 처리 완료")
+
+    async def _wait_for_loading_complete(self, max_wait: int = 30):
+        """
+        로딩 오버레이가 사라질 때까지 대기
+
+        Args:
+            max_wait: 최대 대기 시간 (초)
+        """
+        loading_selectors = [
+            '[class*="dimmed"]',
+            '[class*="loading"]',
+            '[class*="loadingtext"]',
+            '.dimmed__S_MFG',
+            '[class*="full_screen"]',
+        ]
+
+        logger.debug("로딩 오버레이 확인 중...")
+        for attempt in range(max_wait):
+            loading_visible = False
+            for selector in loading_selectors:
+                try:
+                    loading = self.page.locator(selector).first
+                    if await loading.is_visible(timeout=200):
+                        loading_visible = True
+                        break
+                except Exception:
+                    continue
+
+            if not loading_visible:
+                if attempt > 0:
+                    logger.info(f"✅ 로딩 완료 (대기 시간: {attempt}초)")
+                return
+
+            if attempt % 5 == 0 and attempt > 0:
+                logger.debug(f"로딩 대기 중... {attempt}초")
+            await asyncio.sleep(1)
+
+        logger.warning(f"로딩 오버레이 {max_wait}초 초과 - 강제 제거 시도")
+
+        # 로딩 오버레이 강제 제거
+        try:
+            removed = await self.page.evaluate("""
+                () => {
+                    let removed = 0;
+                    // 로딩 관련 요소 강제 숨김/제거
+                    const loadingElements = document.querySelectorAll(
+                        '[class*="dimmed"], [class*="loading"], [class*="loadingtext"], [class*="full_screen"]'
+                    );
+                    loadingElements.forEach(el => {
+                        el.style.display = 'none';
+                        el.style.visibility = 'hidden';
+                        el.style.pointerEvents = 'none';
+                        removed++;
+                    });
+                    return removed;
+                }
+            """)
+            if removed > 0:
+                logger.info(f"⚠️ 로딩 오버레이 {removed}개 강제 제거됨")
+        except Exception as e:
+            logger.debug(f"로딩 오버레이 강제 제거 실패: {e}")
 
     async def _wait_for_editor(self):
         """에디터 로드 대기"""
@@ -1276,6 +1388,9 @@ class NaverBlogPoster:
         self._current_title = title  # 검증용으로 저장
         logger.info("포스트 발행 중...")
 
+        # ★★★ 발행 전 로딩 오버레이 대기 ★★★
+        await self._wait_for_loading_complete()
+
         # ★★★ 발행 전 취소선 완전 제거 ★★★
         logger.info("🔧 발행 전 취소선 제거 시작...")
         try:
@@ -1410,6 +1525,19 @@ class NaverBlogPoster:
                 publish_btn = self.page.locator(selector).first
                 if await publish_btn.is_visible(timeout=800):
                     await HumanDelay.wait("before_click")
+
+                    # ★★★ 마우스 이동 시뮬레이션 추가 ★★★
+                    try:
+                        import random
+                        box = await publish_btn.bounding_box()
+                        if box:
+                            target_x = box["x"] + box["width"] / 2 + random.uniform(-3, 3)
+                            target_y = box["y"] + box["height"] / 2 + random.uniform(-2, 2)
+                            await self.page.mouse.move(target_x, target_y, steps=random.randint(5, 10))
+                            await asyncio.sleep(random.uniform(0.1, 0.3))
+                    except:
+                        pass
+
                     await publish_btn.click()
                     logger.info(f"1단계 - 발행 버튼 클릭: {selector}")
                     clicked = True
@@ -1647,6 +1775,12 @@ class NaverBlogPoster:
         2. 최종 발행 버튼 클릭
         3. 발행 완료 확인
         """
+        # ★★★ 0단계: 로딩 오버레이가 사라질 때까지 대기 ★★★
+        await self._wait_for_loading_complete(max_wait=30)
+
+        # 로딩 완료 후 추가 안정화 대기
+        await asyncio.sleep(2)
+
         logger.info("발행 설정 레이어 대기 중...")
 
         # 1단계: 발행 설정 레이어가 나타날 때까지 대기 (더 긴 대기)
@@ -1745,13 +1879,52 @@ class NaverBlogPoster:
                 btn = self.page.locator(selector).first
                 if await btn.is_visible(timeout=500):
                     await btn.scroll_into_view_if_needed()
-                    await asyncio.sleep(0.5)
+
+                    # ★★★ 인간적인 지연 추가 - 봇 탐지 우회 강화 ★★★
+                    import random
+
+                    # 1. 발행 설정 읽는 척 - 레이어 내용 스크롤
+                    logger.info("발행 설정 확인 중... (인간 시뮬레이션)")
+                    try:
+                        await self.page.mouse.wheel(0, random.randint(50, 100))
+                        await asyncio.sleep(random.uniform(0.5, 1.0))
+                        await self.page.mouse.wheel(0, random.randint(-50, -30))
+                        await asyncio.sleep(random.uniform(0.3, 0.6))
+                    except Exception:
+                        pass
+
+                    # 2. 발행 전 긴 대기 (사람이 내용 최종 확인하는 시간)
+                    await HumanDelay.wait("before_publish")
+
+                    # 3. 마우스를 발행 버튼으로 천천히 이동
+                    try:
+                        box = await btn.bounding_box()
+                        if box:
+                            # 현재 위치에서 버튼까지 부드러운 이동
+                            target_x = box["x"] + box["width"] / 2 + random.uniform(-3, 3)
+                            target_y = box["y"] + box["height"] / 2 + random.uniform(-2, 2)
+
+                            # 여러 단계로 이동 (더 자연스럽게)
+                            await self.page.mouse.move(target_x, target_y, steps=random.randint(15, 25))
+                            await asyncio.sleep(random.uniform(0.3, 0.7))
+
+                            # 버튼 위에서 잠시 머무름 (호버 시뮬레이션)
+                            await asyncio.sleep(random.uniform(0.2, 0.5))
+                    except Exception as e:
+                        logger.debug(f"마우스 이동 시뮬레이션 실패 (무시): {e}")
+
+                    # 4. 클릭 전 마지막 대기
+                    await HumanDelay.wait("before_click")
+
+                    # 5. 클릭 실행
                     await btn.click()
                     logger.info(f"2단계 - 최종 발행 버튼 클릭: {selector}")
                     clicked = True
-                    await asyncio.sleep(2)  # 발행 처리 대기
+
+                    # 6. 발행 처리 대기 (서버 응답 대기)
+                    await asyncio.sleep(random.uniform(3.0, 5.0))
                     break
-            except:
+            except Exception:
                 continue
 
         if clicked:
@@ -1838,12 +2011,11 @@ class NaverBlogPoster:
             logger.error(f"JavaScript 발행 클릭 실패: {e}")
 
     async def insert_image(self, image_path: str):
-        """이미지 삽입 - 클립보드 붙여넣기 방식"""
+        """이미지 삽입 - 플랫폼에 따라 방식 선택"""
         logger.info(f"📷 이미지 삽입 중: {image_path}")
 
         from pathlib import Path
         import os
-        import subprocess
 
         # 절대 경로로 변환
         abs_path = str(Path(image_path).resolve())
@@ -1853,9 +2025,113 @@ class NaverBlogPoster:
             logger.error(f"이미지 파일이 존재하지 않습니다: {abs_path}")
             return False
 
+        # 플랫폼별 분기
+        is_linux = platform.system() == "Linux"
+        is_headless = HEADLESS_MODE
+
+        if is_linux or is_headless:
+            # Linux/헤드리스: 파일 입력을 통한 업로드
+            return await self._insert_image_via_file_input(abs_path)
+        else:
+            # macOS: 클립보드 방식
+            return await self._insert_image_via_clipboard(abs_path)
+
+    async def _insert_image_via_file_input(self, abs_path: str):
+        """Linux/헤드리스용: 네이버 에디터의 파일 입력을 통한 이미지 업로드"""
         try:
-            # ★ 클립보드에 이미지 복사 (Mac용 osascript 사용)
-            logger.info("클립보드에 이미지 복사 중...")
+            logger.info("📷 파일 입력 방식으로 이미지 삽입 중...")
+
+            # 네이버 에디터의 이미지 버튼 찾기
+            image_btn_selectors = [
+                'button[class*="image"]',
+                'button[data-name="image"]',
+                '.se-toolbar-button-image',
+                'button[title*="사진"]',
+                'button[title*="이미지"]',
+                '.se-image-toolbar-button',
+            ]
+
+            image_btn = None
+            for selector in image_btn_selectors:
+                try:
+                    btn = self.page.locator(selector).first
+                    if await btn.is_visible(timeout=2000):
+                        image_btn = btn
+                        logger.info(f"이미지 버튼 발견: {selector}")
+                        break
+                except:
+                    continue
+
+            if not image_btn:
+                # 이미지 버튼을 찾지 못하면 JavaScript로 검색
+                logger.info("JavaScript로 이미지 버튼 탐색 중...")
+                await self.page.evaluate("""
+                    () => {
+                        // 이미지 버튼 찾기 시도
+                        const buttons = document.querySelectorAll('button');
+                        for (const btn of buttons) {
+                            const text = btn.innerText || btn.getAttribute('title') || '';
+                            const cls = btn.className || '';
+                            if (text.includes('사진') || text.includes('이미지') ||
+                                cls.includes('image') || cls.includes('photo')) {
+                                btn.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                await asyncio.sleep(1)
+
+            else:
+                await image_btn.click()
+                logger.info("이미지 버튼 클릭 완료")
+                await asyncio.sleep(1)
+
+            # 파일 입력 요소 찾기 (숨겨진 input[type="file"])
+            file_input_selectors = [
+                'input[type="file"]',
+                'input[accept*="image"]',
+                '.se-file-input',
+            ]
+
+            file_input = None
+            for selector in file_input_selectors:
+                try:
+                    inputs = self.page.locator(selector)
+                    count = await inputs.count()
+                    if count > 0:
+                        # 마지막 파일 입력 요소 사용 (최근 생성된 것)
+                        file_input = inputs.last
+                        logger.info(f"파일 입력 요소 발견: {selector} (총 {count}개)")
+                        break
+                except:
+                    continue
+
+            if file_input:
+                # Playwright의 set_input_files로 파일 업로드
+                await file_input.set_input_files(abs_path)
+                logger.info(f"✅ 파일 입력으로 이미지 업로드: {abs_path}")
+
+                # 업로드 완료 대기
+                await asyncio.sleep(3)
+
+                logger.success("📷 이미지 삽입 완료 (파일 입력 방식)")
+                return True
+            else:
+                logger.warning("파일 입력 요소를 찾을 수 없음")
+                return False
+
+        except Exception as e:
+            logger.warning(f"파일 입력 방식 이미지 삽입 실패: {e}")
+            return False
+
+    async def _insert_image_via_clipboard(self, abs_path: str):
+        """macOS용: 클립보드를 통한 이미지 삽입"""
+        import subprocess
+
+        try:
+            logger.info("클립보드에 이미지 복사 중 (macOS)...")
 
             # AppleScript로 이미지를 클립보드에 복사
             script = f'''
@@ -1902,7 +2178,7 @@ class NaverBlogPoster:
 
             await asyncio.sleep(0.5)
 
-            # ★ Cmd+V로 이미지 붙여넣기
+            # Cmd+V로 이미지 붙여넣기
             await self.page.keyboard.press("Meta+KeyV")
             logger.info("Cmd+V로 이미지 붙여넣기 실행")
 
@@ -2358,10 +2634,9 @@ class NaverBlogPoster:
             logger.debug(f"DOM 취소선 제거 중 오류 (무시): {e}")
 
     async def _insert_image_and_move_below(self, image_path: str):
-        """이미지 삽입 후 커서를 이미지 아래로 이동"""
+        """이미지 삽입 후 커서를 이미지 아래로 이동 - 플랫폼에 따라 방식 선택"""
         from pathlib import Path
         import os
-        import subprocess
 
         # 절대 경로로 변환
         abs_path = str(Path(image_path).resolve())
@@ -2369,6 +2644,48 @@ class NaverBlogPoster:
         if not os.path.exists(abs_path):
             logger.error(f"이미지 파일이 존재하지 않습니다: {abs_path}")
             return False
+
+        # 플랫폼별 분기
+        is_linux = platform.system() == "Linux"
+        is_headless = HEADLESS_MODE
+
+        try:
+            if is_linux or is_headless:
+                # Linux/헤드리스: 파일 입력 방식
+                success = await self._insert_image_via_file_input(abs_path)
+            else:
+                # macOS: 클립보드 방식
+                success = await self._insert_image_via_clipboard_inline(abs_path)
+
+            if not success:
+                return False
+
+            # ★★★ 핵심: 이미지 삽입 후 커서를 이미지 아래로 이동
+            # 네이버 에디터에서는 이미지가 새 컴포넌트로 삽입되므로,
+            # 다음 컴포넌트로 이동해야 함
+
+            # 1. ArrowDown으로 이미지 아래로 이동
+            await self.page.keyboard.press("ArrowDown")
+            await asyncio.sleep(0.2)
+
+            # 2. End 키로 줄 끝으로 이동 (혹시 텍스트가 있을 경우)
+            await self.page.keyboard.press("End")
+            await asyncio.sleep(0.1)
+
+            # 3. 줄바꿈 추가
+            await self.page.keyboard.press("Enter")
+            await asyncio.sleep(0.2)
+
+            logger.success("📷 이미지 삽입 및 커서 이동 완료")
+            return True
+
+        except Exception as e:
+            logger.warning(f"이미지 삽입 실패: {e}")
+            return False
+
+    async def _insert_image_via_clipboard_inline(self, abs_path: str):
+        """macOS용 인라인 이미지 삽입 (커서 이동 없는 버전)"""
+        import subprocess
 
         try:
             # 클립보드에 이미지 복사
@@ -2402,28 +2719,10 @@ class NaverBlogPoster:
 
             # 이미지 업로드 완료 대기
             await asyncio.sleep(3)
-
-            # ★★★ 핵심: 이미지 삽입 후 커서를 이미지 아래로 이동
-            # 네이버 에디터에서는 이미지가 새 컴포넌트로 삽입되므로,
-            # 다음 컴포넌트로 이동해야 함
-
-            # 1. ArrowDown으로 이미지 아래로 이동
-            await self.page.keyboard.press("ArrowDown")
-            await asyncio.sleep(0.2)
-
-            # 2. End 키로 줄 끝으로 이동 (혹시 텍스트가 있을 경우)
-            await self.page.keyboard.press("End")
-            await asyncio.sleep(0.1)
-
-            # 3. 줄바꿈 추가
-            await self.page.keyboard.press("Enter")
-            await asyncio.sleep(0.2)
-
-            logger.success("📷 이미지 삽입 및 커서 이동 완료")
             return True
 
         except Exception as e:
-            logger.warning(f"이미지 삽입 실패: {e}")
+            logger.warning(f"클립보드 이미지 삽입 실패: {e}")
             return False
 
     async def _move_cursor_to_end(self):

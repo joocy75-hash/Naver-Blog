@@ -12,7 +12,7 @@ pyperclip==1.9.0               # 클립보드 제어 (fill() 대안)
 # AI API
 anthropic==0.42.0              # Claude Haiku 4.5 / Sonnet
 google-generativeai==0.8.3     # Gemini Pro
-google-genai==0.2.2            # Gemini 최신 SDK (이미지 생성)
+google-genai>=1.0.0            # Gemini 최신 SDK (이미지 생성)
 google-cloud-aiplatform==1.74.0  # Vertex AI Imagen 3
 openai==1.58.1                 # Perplexity (OpenAI 호환)
 
