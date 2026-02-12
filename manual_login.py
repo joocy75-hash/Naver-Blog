@@ -7,7 +7,7 @@
 """
 
 import asyncio
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 from security.session_manager import SecureSessionManager
 from loguru import logger
 import sys
@@ -57,12 +57,7 @@ async def manual_login(naver_id: str):
             timezone_id='Asia/Seoul'
         )
 
-        # 봇 탐지 우회 스크립트
-        await context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-        """)
+        # Patchright가 CDP leak 차단을 자체 처리 (추가 스크립트 불필요)
 
         page = await context.new_page()
 

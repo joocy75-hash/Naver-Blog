@@ -8,7 +8,7 @@
 import asyncio
 import sys
 import os
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 from security.session_manager import SecureSessionManager
 from utils.clipboard_input import ClipboardInputHelper
 from loguru import logger

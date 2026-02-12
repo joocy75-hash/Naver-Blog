@@ -11,7 +11,7 @@ import os
 import random
 from typing import Dict, Any, List, Optional
 from pathlib import Path
-from playwright.async_api import async_playwright, Page, Browser, BrowserContext
+from patchright.async_api import async_playwright, Page, Browser, BrowserContext
 from loguru import logger
 
 from security.credential_manager import CredentialManager
@@ -302,10 +302,10 @@ class UploadAgent:
                 error_msg = str(e)
                 logger.error(f"브라우저 시작 실패 (시도 {attempt + 1}/{max_retries}): {error_msg}")
 
-                # Playwright 버전 불일치 힌트
+                # Patchright 브라우저 미설치 힌트
                 if "Looks like" in error_msg or "browser" in error_msg.lower():
-                    logger.error("💡 힌트: Playwright 브라우저가 설치되지 않았거나 버전 불일치일 수 있습니다.")
-                    logger.error("   해결: 'playwright install chromium' 실행 또는 Docker 이미지 재빌드")
+                    logger.error("💡 힌트: Patchright 브라우저가 설치되지 않았거나 버전 불일치일 수 있습니다.")
+                    logger.error("   해결: 'patchright install chromium' 실행 또는 Docker 이미지 재빌드")
 
                 if attempt == max_retries - 1:
                     raise Exception(f"브라우저 시작 실패 (모든 재시도 실패): {last_error}")
@@ -346,12 +346,8 @@ class UploadAgent:
                 timezone_id='Asia/Seoul'
             )
 
-            # navigator.webdriver 제거 (봇 탐지 우회)
-            await self.context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-            """)
+            # Patchright가 CDP leak 차단을 자체 처리
+            logger.info("Patchright anti-detection 활성화됨")
 
         self.page = await self.context.new_page()
         logger.info("브라우저 시작 완료")

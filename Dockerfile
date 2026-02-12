@@ -1,18 +1,16 @@
 # ============================================
 # 네이버 블로그 자동화 시스템 - Production Dockerfile
-# Playwright 공식 이미지 기반
+# Patchright (anti-detection Playwright fork) 기반
 # ============================================
 
-# Playwright 공식 이미지 사용 (모든 브라우저 의존성 포함)
-# 2025-12-28: v1.57.0으로 업데이트 (브라우저 시작 오류 해결)
-FROM mcr.microsoft.com/playwright/python:v1.57.0-noble
+FROM python:3.11-slim-bookworm
 
 # 메타데이터
 LABEL maintainer="mr.joo"
 LABEL description="Naver Blog Automation System - Group B"
-LABEL version="1.0.0"
+LABEL version="2.0.0"
 
-# 추가 패키지 설치
+# 시스템 패키지 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-nanum \
     dumb-init \
@@ -25,7 +23,8 @@ WORKDIR /app
 # 의존성 설치 (먼저 복사하여 캐시 활용)
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    patchright install --with-deps chromium
 
 # 애플리케이션 코드 복사
 COPY . .

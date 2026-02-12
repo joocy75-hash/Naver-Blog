@@ -12,19 +12,13 @@ import asyncio
 import os
 import platform
 import random
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 from security.session_manager import SecureSessionManager
 from utils.clipboard_input import ClipboardInputHelper
 from loguru import logger
 
-# Playwright Stealth - 봇 탐지 우회
-try:
-    from playwright_stealth import stealth_async
-    STEALTH_AVAILABLE = True
-    logger.info("playwright-stealth 로드됨 - 봇 탐지 우회 활성화")
-except ImportError:
-    STEALTH_AVAILABLE = False
-    logger.warning("playwright-stealth 미설치 - 기본 우회만 적용")
+# Patchright = Playwright + anti-detection (CDP leak 차단 내장)
+logger.info("Patchright 로드됨 - CDP 탐지 우회 내장")
 
 # 환경 변수에서 HEADLESS 설정 읽기 (기본값: 서버에서는 True)
 HEADLESS_MODE = os.environ.get("HEADLESS", "True").lower() == "true"
@@ -209,27 +203,8 @@ class NaverBlogPoster:
             self.page.set_default_navigation_timeout(60000)
             logger.info("프록시용 타임아웃 설정: 60초")
 
-        # ★★★ Playwright Stealth 적용 - 봇 탐지 우회 강화 ★★★
-        if STEALTH_AVAILABLE:
-            await stealth_async(self.page)
-            logger.info("✅ playwright-stealth 적용 완료")
-        else:
-            # 기본 봇 탐지 우회 (stealth 미설치 시)
-            await self.context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-                // Chrome 속성 추가
-                window.chrome = { runtime: {} };
-                // Permissions API 수정
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                    Promise.resolve({ state: Notification.permission }) :
-                    originalQuery(parameters)
-                );
-            """)
-            logger.info("기본 봇 탐지 우회 적용")
+        # Patchright가 CDP leak 차단을 자체 처리 (추가 stealth 불필요)
+        logger.info("Patchright anti-detection 활성화됨")
 
         logger.success("브라우저 시작 완료 (세션 로드됨)")
 
