@@ -1,9 +1,16 @@
 # Naver Blog Automation - Claude Code Instructions
 
+## MUST: 인수인계 작성 규칙
+
+- **모든 작업 완료 후** 반드시 이 파일의 `Changelog` 섹션에 변경 사항을 기록할 것
+- 형식: `### YYYY-MM-DD 작업 제목` + 변경 파일 목록 + 핵심 내용
+- 다음 작업자가 컨텍스트 없이도 이해할 수 있도록 작성
+- 아키텍처 변경이 있으면 `Architecture` 섹션도 함께 업데이트
+
 ## Project Overview
 - 네이버 블로그 자동 포스팅 시스템 (AI 콘텐츠 생성 + 브라우저 자동화)
 - Stack: Python 3.11, Patchright, Claude/Gemini API, SQLAlchemy, Docker
-- Deploy: Docker on Hetzner VPS
+- Deploy: Docker on Hetzner VPS (서버), Mac 로컬 (CDP 모드)
 
 ## Browser Automation: Patchright (NOT Playwright)
 
@@ -70,7 +77,27 @@ patchright install --with-deps chromium
 - `config/human_timing.py` - 봇 감지 회피용 딜레이 설정
 - `utils/clipboard_input.py` - 클립보드 기반 텍스트 입력 (fill() 대안)
 
+### Browser Connection Modes
+
+| 모드           | 환경         | USE_CDP | 동작                                  |
+|----------------|--------------|---------|---------------------------------------|
+| CDP (권장)     | Mac 로컬     | True    | 영속 Chrome에 연결, 일관된 핑거프린트 |
+| 독립 브라우저  | 서버/Docker  | False   | 매번 새 Chromium 실행 + 세션 파일     |
+
+CDP 모드 사용법:
+
+1. `./scripts/start-chrome.sh` - Chrome 영속 실행 (port 9222)
+2. `python manual_login.py <naver_id>` - Chrome에서 수동 로그인
+3. `python auto_post.py` - CDP로 자동 연결, 포스팅
+
+CDP 실패 시 자동으로 기존 독립 브라우저 방식으로 폴백.
+
 ### Session Flow
+
+**CDP 모드:** Chrome 프로필에 쿠키 자동 유지 → 세션 파일 관리 불필요
+
+**독립 브라우저 모드:**
+
 1. `manual_login.py` 로 수동 로그인 (캡차/2FA 직접 처리)
 2. 세션 암호화 저장 (`data/sessions/*.session.encrypted`)
 3. `auto_post.py` / `upload_agent.py`가 저장된 세션으로 브라우저 시작
@@ -90,3 +117,29 @@ patchright install --with-deps chromium
 - 하드코딩된 네이버 ID (`wncksdid0750`) 추가하지 않기 → 환경변수 사용
 - `except:` (bare except) 사용하지 않기 → `except Exception:` 이상 사용
 - Chrome UA 버전을 120으로 고정하지 않기 → 최신 버전 유지
+
+## Changelog
+
+### 2026-02-17 영속 Chrome CDP 연결 모드 추가
+
+봇 감지 우회 강화를 위해 매번 새 Chromium 실행 대신 로컬 Chrome에 CDP로 연결하는 모드 추가.
+
+**변경 파일:**
+
+- `scripts/start-chrome.sh` - (신규) Chrome CDP 모드 실행 스크립트 (port 9222)
+- `auto_post.py` - `start_browser()` CDP 분기 + `close_browser()` CDP 처리 + `_check_chrome_available()`
+- `manual_login.py` - CDP/독립 브라우저 듀얼 모드
+- `config/settings.py` - `USE_CDP`, `CDP_ENDPOINT`, `CDP_TIMEOUT` 추가
+- `.env.example` - `CDP_ENDPOINT` 추가, 기본값 `USE_CDP=True`
+- `.mcp.json` - Chrome DevTools MCP 추가 (개발/디버깅용)
+
+**핵심:**
+
+- CDP 모드 기본 활성화 (`USE_CDP=True`), 실패 시 기존 방식 자동 폴백
+- CDP `close_browser()`는 페이지만 닫고 Chrome 유지 (영속 세션)
+- `upload_agent.py`에 이미 있던 CDP 패턴을 `auto_post.py`에도 적용
+- Chrome DevTools MCP는 Claude Code 디버깅 전용 (프로덕션 무관)
+
+### 2026-02-12 Playwright → Patchright 마이그레이션
+
+네이버 봇 감지 우회를 위해 Patchright로 전환. 상세 내용은 상단 `Browser Automation` 섹션 참조.
