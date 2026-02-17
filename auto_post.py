@@ -12,6 +12,7 @@ import asyncio
 import os
 import platform
 import random
+import requests
 from patchright.async_api import async_playwright
 from security.session_manager import SecureSessionManager
 from utils.clipboard_input import ClipboardInputHelper
@@ -22,6 +23,11 @@ logger.info("Patchright 로드됨 - CDP 탐지 우회 내장")
 
 # 환경 변수에서 HEADLESS 설정 읽기 (기본값: 서버에서는 True)
 HEADLESS_MODE = os.environ.get("HEADLESS", "True").lower() == "true"
+
+# CDP (Chrome DevTools Protocol) 설정
+USE_CDP = os.environ.get("USE_CDP", "True").lower() == "true"
+CDP_ENDPOINT = os.environ.get("CDP_ENDPOINT", "http://127.0.0.1:9222")
+CDP_TIMEOUT = float(os.environ.get("CDP_TIMEOUT", "5"))
 
 # Residential Proxy 설정 (Bright Data)
 PROXY_ENABLED = os.environ.get("PROXY_ENABLED", "False").lower() == "true"
@@ -146,16 +152,73 @@ class NaverBlogPoster:
         self.select_all_key = "Control+A" if self.is_linux else "Meta+A"
         logger.info(f"플랫폼: {platform.system()}, 전체선택 키: {self.select_all_key}")
 
+    def _check_chrome_available(self) -> bool:
+        """Chrome CDP 연결 가능 여부 확인"""
+        try:
+            resp = requests.get(f"{CDP_ENDPOINT}/json/version", timeout=3)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
     async def start_browser(self):
         """브라우저 시작 및 세션 로드"""
         logger.info("브라우저 시작 중...")
 
-        # 세션 로드
+        self._is_cdp = False
+        self._playwright = await async_playwright().start()
+
+        # CDP 모드: 영속 Chrome에 연결 (Mac 로컬 권장)
+        if USE_CDP:
+            if not self._check_chrome_available():
+                logger.warning(f"Chrome CDP 미응답 ({CDP_ENDPOINT})")
+                logger.warning("./scripts/start-chrome.sh 실행 후 재시도하세요")
+                # CDP 실패 시 기존 방식으로 폴백
+                logger.info("기존 브라우저 실행 방식으로 대체...")
+            else:
+                try:
+                    logger.info(f"Chrome CDP 연결 시도 중... ({CDP_ENDPOINT})")
+                    self.browser = await asyncio.wait_for(
+                        self._playwright.chromium.connect_over_cdp(CDP_ENDPOINT),
+                        timeout=CDP_TIMEOUT,
+                    )
+
+                    if not self.browser.is_connected():
+                        raise Exception("CDP 브라우저가 연결되지 않음")
+
+                    self._is_cdp = True
+                    contexts = self.browser.contexts
+                    if contexts:
+                        self.context = contexts[0]
+                        pages = self.context.pages
+                        self.page = pages[0] if pages else await self.context.new_page()
+                        logger.info(f"기존 페이지 사용: {self.page.url}")
+                    else:
+                        self.context = await self.browser.new_context()
+                        self.page = await self.context.new_page()
+
+                    logger.success("Chrome CDP 연결 성공! (기존 로그인 상태 사용)")
+                    logger.info("Patchright anti-detection 활성화됨")
+                    return
+
+                except asyncio.TimeoutError:
+                    logger.warning(f"CDP 연결 타임아웃 ({CDP_TIMEOUT}초)")
+                except Exception as e:
+                    logger.warning(f"CDP 연결 실패: {e}")
+
+                # CDP 연결 실패 시 정리
+                if self.browser:
+                    try:
+                        await self.browser.close()
+                    except Exception:
+                        pass
+                    self.browser = None
+                self._is_cdp = False
+                logger.info("기존 브라우저 실행 방식으로 대체...")
+
+        # 기존 방식: 새 브라우저 실행 + 세션 파일 로드
         storage_state = self.session_manager.load_session(self.session_name)
         if not storage_state:
             raise Exception(f"세션을 찾을 수 없습니다: {self.session_name}")
-
-        self._playwright = await async_playwright().start()
 
         logger.info(f"Headless 모드: {HEADLESS_MODE}")
         self.browser = await self._playwright.chromium.launch(
@@ -178,7 +241,7 @@ class NaverBlogPoster:
                 "username": PROXY_USERNAME,
                 "password": PROXY_PASSWORD,
             }
-            logger.info(f"🌐 Residential Proxy 활성화: {PROXY_SERVER}")
+            logger.info(f"Residential Proxy 활성화: {PROXY_SERVER}")
         else:
             logger.info("프록시 미사용 (직접 연결)")
 
@@ -192,33 +255,50 @@ class NaverBlogPoster:
             locale="ko-KR",
             timezone_id="Asia/Seoul",
             proxy=proxy_config,
-            ignore_https_errors=True if proxy_config else False,  # 프록시 사용 시 SSL 인증서 무시
+            ignore_https_errors=True if proxy_config else False,
         )
 
         self.page = await self.context.new_page()
 
         # 프록시 사용 시 타임아웃 증가 (프록시 지연 고려)
         if proxy_config:
-            self.page.set_default_timeout(60000)  # 60초
+            self.page.set_default_timeout(60000)
             self.page.set_default_navigation_timeout(60000)
             logger.info("프록시용 타임아웃 설정: 60초")
 
-        # Patchright가 CDP leak 차단을 자체 처리 (추가 stealth 불필요)
         logger.info("Patchright anti-detection 활성화됨")
-
         logger.success("브라우저 시작 완료 (세션 로드됨)")
 
     async def close_browser(self):
-        """브라우저 종료"""
-        if self.page:
-            await self.page.close()
-        if self.context:
-            await self.context.close()
-        if self.browser:
-            await self.browser.close()
+        """브라우저 종료 - CDP 모드에서는 페이지만 닫고 브라우저 유지"""
+        is_cdp = hasattr(self, '_is_cdp') and self._is_cdp
+
+        if is_cdp:
+            # CDP: 페이지만 정리, Chrome은 계속 실행
+            if self.page:
+                try:
+                    if self.page.url != 'about:blank':
+                        await self.page.close()
+                except Exception as e:
+                    logger.debug(f"CDP 페이지 닫기 실패 (무시): {e}")
+            self.page = None
+            self.context = None
+            self.browser = None
+        else:
+            # 기존 방식: 전부 종료
+            if self.page:
+                await self.page.close()
+            if self.context:
+                await self.context.close()
+            if self.browser:
+                await self.browser.close()
+
         if self._playwright:
             await self._playwright.stop()
-        logger.info("브라우저 종료")
+            self._playwright = None
+
+        self._is_cdp = False
+        logger.info(f"브라우저 {'연결 해제' if is_cdp else '종료'} 완료")
 
     async def check_login_status(self) -> bool:
         """로그인 상태 확인"""

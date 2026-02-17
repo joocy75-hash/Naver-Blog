@@ -35,6 +35,15 @@
         "/Users/mr.joo/Desktop/네이버블로그봇/data"
       ],
       "description": "안전한 파일 저장 및 로그 관리"
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--autoConnect"
+      ],
+      "description": "Chrome 브라우저 디버깅 및 개발용 MCP"
     }
   }
 }

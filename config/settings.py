@@ -46,6 +46,14 @@ SCROLL_SPEED_HUMAN_LIKE = os.getenv('SCROLL_SPEED_HUMAN_LIKE', 'True').lower() =
 HEADLESS = os.getenv('HEADLESS', 'False').lower() == 'true'
 
 # ============================================
+# CDP (Chrome DevTools Protocol)
+# ============================================
+
+USE_CDP = os.getenv('USE_CDP', 'True').lower() == 'true'
+CDP_ENDPOINT = os.getenv('CDP_ENDPOINT', 'http://127.0.0.1:9222')
+CDP_TIMEOUT = int(os.getenv('CDP_TIMEOUT', '5'))
+
+# ============================================
 # 모니터링
 # ============================================
 
